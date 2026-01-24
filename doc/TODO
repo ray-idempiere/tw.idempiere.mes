@@ -1,0 +1,39 @@
+針對成衣製造業 (Garment Manufacturing) 的特性，這個 Workflow Editor 目前已經具備了很好的基礎（特別是修復了 Grid 擴充功能後，可以支援更長的生產線）。
+
+基於我在 iDempiere MES 開發上的經驗，以及成衣業「工序繁多、款式變化快、依賴產線平衡」的特點，我對這個編輯器有以下幾個 Feature Suggestions (功能建議)：
+
+1. 結合「標準工時 (SAM)」進行產線平衡 (Line Balancing)
+成衣業非常看重 SAM (Standard Allowed Minute)。目前的 Standard Operation (標準工序) 庫可以進一步增強：
+
+功能建議：當從左側 Library 拖曳一個工序（如「車縫領子」）到 Workflow 時，不只複製名稱，還應該自動帶入該工序的 標準工時。
+視覺化價值：在 Grid 下方或側邊增加一個動態的「平衡率圖表 (Balance Chart)」。當使用者串接工序時，系統即時計算目前的 瓶頸工序 (Bottleneck) 和 產線平衡率。這將使這個 Editor 從單純的「流程繪圖」升級為「產線規劃工具」。
+2. 支援「分流與匯流」的泳道式佈局 (Swimlane Layout)
+成衣製作常有「部件分流」的情況（例如：一條線做袖子，一條線做在大身，最後匯流縫合）。
+
+應用這剛修好的 Grid：您可以利用修復好的多欄/多列功能，定義 "Row" (列) 為不同的部件 (Component)。
+Row 1: 領子 (Collar)
+Row 2: 袖子 (Sleeve)
+Row 3: 大身 (Body)
+Row 4: 總組裝 (Assembly)
+建議：在最左側第一欄增加「Row Header (列標題)」的功能，讓版師能清楚規劃不同部件的流向。
+3. 與「款式圖 (Tech Pack)」的視覺整合
+成衣工單 (MO) 依賴 Tech Pack (技術包/款式圖)。
+
+功能建議：在 Node (節點) 的右鍵選單中，增加「查看工序圖/縫法圖」的功能。
+實作：點擊節點上的 Icon，直接彈出該工序對應的縫紉示意圖或品質檢驗重點 (QC Point)，這對現場工藝指導非常有幫助。
+4. 即時現場監控 (Real-time Shop Floor Monitor)
+如果您打算將此畫面用於現場戰情室：
+
+功能建議：利用 Node 的顏色變化來反應現場狀態。
+綠色：WIP (在製品) 堆積正常。
+紅色：WIP 堆積過高 (瓶頸報警)。
+灰色：缺料或停機。
+透過 Ajax 定時刷新，讓管理者看一眼 Workflow 圖就知道目前的工單卡在哪個環節。
+5. 批次快速排程 (Quick Batch Sequence)
+成衣款式的工序雖然多，但往往大同小異（例如 T-Shirt 與 Polo 衫有 80% 相似）。
+
+功能建議：增加「Template (樣板)」功能。允許使用者將目前的 Grid 排列存為 "Polo衫標準流程"，下次開新工單時，一鍵套用，只需微調差異工序，大幅減少繪製時間。
+這些功能大部分都可以基於您現有的 
+WFPanelManufacturing
+ 架構延伸開發。如果您對其中哪一點感興趣，我們可以先試著規劃該功能的 Prototype。
+

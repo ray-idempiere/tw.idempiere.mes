@@ -1,0 +1,23 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: MES
+Bundle-SymbolicName: tw.idempiere.mes
+Bundle-Version: 1.0.0.qualifier
+Bundle-Vendor: Ray Lee
+Automatic-Module-Name: tw.idempiere.mes
+Require-Bundle: org.adempiere.ui.zk,
+ org.adempiere.base,
+ zweb,
+ org.adempiere.plugin.utils,
+ org.adempiere.ui,
+ org.idempiere.zk.extra,
+ zcommon,
+ zel,
+ zhtml,
+ zk,
+ zkbind,
+ zkplus,
+ zul
+Import-Package: com.google.gson
+Service-Component: OSGI-INF/tw.idempiere.mes.factories.MESFormFactory.xml
+
