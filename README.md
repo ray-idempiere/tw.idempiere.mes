@@ -4,6 +4,7 @@
 
 | Version | Date | Summary |
 |---------|------|---------|
+| **1.3.0** | 2026-01-25 | **Notice System & Alerting**<br>• Added "Notice" feature to Context Menu for assigning alerts to Orders<br>• Implemented real-time KPI Dialog updates with **Flashing Red Alert** effect for 10s<br>• Optimized Notice visibility with large 48px Bold font and text wrapping<br>• Enhanced timeline synchronization for notice updates |
 | **1.2.0** | 2026-01-25 | **Production Stage Icons & Timeline Synchronization**<br>• Added centralized `StageConfig` enum for unified stage management<br>• Implemented stage icon display in Timeline and KPI Dialog (✂️ Cutting, 🧵 Sewing, 📦 Packing, 🧱 Material Issue)<br>• Added EventQueue publishing for Timeline drag-and-drop operations<br>• Added EventQueue publishing for context menu stage changes<br>• Complete cross-browser synchronization across all update scenarios |
 | **1.1.0** | 2024-12-XX | **Real-time Cross-Browser Synchronization**<br>• Implemented ZK EventQueue for real-time updates<br>• Added barcode scanning with automatic KPI Dialog refresh<br>• Server push support for Timeline and KPI Dialog subscribers |
 | **1.0.0** | 2024-XX-XX | **Initial Release**<br>• Timeline visualization with Vis.js library<br>• Resource KPI Dialog with product image display<br>• Drag-and-drop order scheduling<br>• Daily production tracking and statistics |

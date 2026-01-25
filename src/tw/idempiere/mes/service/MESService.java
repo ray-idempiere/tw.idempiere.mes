@@ -49,10 +49,12 @@ public class MESService {
         public BigDecimal qtyOrdered;
         public BigDecimal qtyDelivered;
         public int productId;
+        public String description;
+        public String notice;
 
         public TimelineItem(int id, int group, String content, Timestamp start, Timestamp end, String title,
                 String className, String documentNo, String productName, String productValue, BigDecimal qtyOrdered,
-                BigDecimal qtyDelivered, int productId) {
+                BigDecimal qtyDelivered, int productId, String description) {
             this.id = id;
             this.group = group;
             this.content = content;
@@ -66,6 +68,19 @@ public class MESService {
             this.qtyOrdered = qtyOrdered;
             this.qtyDelivered = qtyDelivered;
             this.productId = productId;
+            this.description = description;
+
+            // Parse Notice: "Notice: ..."
+            if (description != null && description.contains("Notice: ")) {
+                int startIndex = description.indexOf("Notice: ") + 8; // Length of "Notice: "
+                int endIndex = description.indexOf("\n", startIndex);
+                if (endIndex == -1) {
+                    endIndex = description.length();
+                }
+                this.notice = description.substring(startIndex, endIndex).trim();
+            } else {
+                this.notice = null;
+            }
         }
     }
 
@@ -205,16 +220,10 @@ public class MESService {
                 String prodName = rs.getString("ProductName");
                 int prodId = rs.getInt("M_Product_ID");
 
-                // Icon Logic
-                String icon = "";
-                if (desc.contains("Cutting"))
-                    icon = "✂️ ";
-                else if (desc.contains("Sewing"))
-                    icon = "🧵 ";
-                else if (desc.contains("Packing"))
-                    icon = "📦 ";
-                else if (desc.contains("Material Issue"))
-                    icon = "🧱 "; // Brick/Material
+                // Get stage icon from centralized config
+                String stageName = extractStageName(desc);
+                tw.idempiere.mes.model.StageConfig stageConfig = tw.idempiere.mes.model.StageConfig.fromName(stageName);
+                String icon = stageConfig.getIcon() + " ";
 
                 String content = icon + prodValue + " (" + qtyDelivered.intValue() + "/" + qty.intValue() + ")";
 
@@ -239,7 +248,7 @@ public class MESService {
                     if (end.before(start))
                         end = start;
                     items.add(new TimelineItem(id, resId, content, start, end, title.toString(), className, docNo,
-                            prodName, prodValue, qty, qtyDelivered, prodId));
+                            prodName, prodValue, qty, qtyDelivered, prodId, desc));
                 }
             }
         } catch (SQLException e) {
@@ -350,12 +359,13 @@ public class MESService {
                 String prodValue = rs.getString("ProductValue");
                 String prodName = rs.getString("ProductName");
                 int prodId = rs.getInt("M_Product_ID");
+                String desc = rs.getString("Description");
 
                 String content = prodName + " (" + qtyDelivered.intValue() + "/" + qty.intValue() + ")";
                 String status = rs.getString("DocStatus");
 
                 items.add(new TimelineItem(id, resourceId, content, start, end, docNo, status, docNo, prodName,
-                        prodValue, qty, qtyDelivered, prodId));
+                        prodValue, qty, qtyDelivered, prodId, desc));
             }
         } catch (SQLException e) {
             log.log(Level.SEVERE, "Failed to load resource stats", e);
@@ -363,5 +373,30 @@ public class MESService {
             DB.close(rs, pstmt);
         }
         return items;
+    }
+
+    /**
+     * Extracts stage name from PP_Order Description field.
+     * Parses "Stage: Sewing" format and returns "Sewing".
+     *
+     * @param description PP_Order Description field
+     * @return Stage name or null if not found
+     */
+    private String extractStageName(String description) {
+        if (description == null || description.trim().isEmpty()) {
+            return null;
+        }
+
+        // Parse "Stage: Sewing" format
+        if (description.contains("Stage: ")) {
+            int startIndex = description.indexOf("Stage: ") + 7;
+            int endIndex = description.indexOf("\n", startIndex);
+            if (endIndex == -1) {
+                endIndex = description.length();
+            }
+            return description.substring(startIndex, endIndex).trim();
+        }
+
+        return null;
     }
 }

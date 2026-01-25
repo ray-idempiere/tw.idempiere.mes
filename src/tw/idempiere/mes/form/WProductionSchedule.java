@@ -75,7 +75,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
     // ==================== UI Constants ====================
 
-    private static final String VERSION = "1.2.0"; // Current System Version
+    private static final String VERSION = "1.3.0"; // Current System Version
 
     // Window Dimensions
     private static final String WINDOW_WIDTH_FULL = "100%";
@@ -160,6 +160,14 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     protected void initForm() {
         ZKUpdateUtil.setHeight(this, "100%");
         Borderlayout layout = new Borderlayout();
+        // Inject CSS for flashing effect
+        Html style = new Html("<style>" +
+                "@keyframes flash-border { 0% { border-color: red; box-shadow: 0 0 10px red; } 50% { border-color: transparent; box-shadow: none; } 100% { border-color: red; box-shadow: 0 0 10px red; } }"
+                +
+                ".flash-highlight { border: 3px solid red !important; animation: flash-border 1s 10; }" +
+                "</style>");
+        this.appendChild(style);
+
         this.appendChild(layout);
 
         // Toolbar
@@ -282,6 +290,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         // Listen for Custom Context Menu Events
         this.addEventListener("onProcessSet", this);
+        this.addEventListener("onNotice", this);
         this.addEventListener("onMaterialIssue", this);
 
         // Inject Dependencies
@@ -513,6 +522,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             int orderId = (Integer) event.getData();
             updateOrderStage(orderId, "Material Issue");
             Clients.showNotification("Material Issue Requested", "info", null, "middle_center", 2000);
+        } else if (event.getName().equals("onNotice")) {
+            int orderId = (Integer) ((org.zkoss.json.JSONObject) event.getData()).get("id");
+            showNoticeDialog(orderId);
         }
     }
 
@@ -563,6 +575,102 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         }
 
         refreshTimeline();
+    }
+
+    private void updateOrderNotice(int orderId, String notice) {
+        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM PP_Order WHERE PP_Order_ID=?",
+                orderId);
+        if (currentDesc == null)
+            currentDesc = "";
+
+        String newDesc = currentDesc;
+        // Clean input notice to single line
+        String cleanNotice = notice.replace("\n", " ").trim();
+
+        if (newDesc.contains("Notice: ")) {
+            newDesc = newDesc.replaceAll("Notice: .*", "Notice: " + cleanNotice);
+        } else {
+            if (!newDesc.isEmpty() && !newDesc.endsWith("\n"))
+                newDesc += "\n";
+            newDesc += "Notice: " + cleanNotice;
+        }
+
+        DB.executeUpdate("UPDATE PP_Order SET Description=? WHERE PP_Order_ID=?", new Object[] { newDesc, orderId },
+                false, null);
+
+        // Publish EventQueue event to notify KPI Dialogs
+        try {
+            int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", orderId);
+
+            System.out.println("=== DEBUG: [Context Menu] Publishing notice change event for Order ID: " + orderId);
+
+            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
+                    EVENT_QUEUE_NAME,
+                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
+                    true);
+
+            Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { orderId, productId, 0 });
+            queue.publish(updateEvent);
+
+            System.out.println("=== DEBUG: [Context Menu] Event published successfully");
+        } catch (Exception ex) {
+            System.err.println("=== DEBUG: [Context Menu] Failed to publish event: " + ex.getMessage());
+        }
+
+        refreshTimeline();
+    }
+
+    private void showNoticeDialog(final int orderId) {
+        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM PP_Order WHERE PP_Order_ID=?",
+                orderId);
+        // Extract existing notice
+        String notice = "";
+        if (currentDesc != null && currentDesc.contains("Notice: ")) {
+            int start = currentDesc.indexOf("Notice: ") + 8;
+            int end = currentDesc.indexOf("\n", start);
+            if (end == -1)
+                end = currentDesc.length();
+            notice = currentDesc.substring(start, end);
+        }
+
+        final Window win = new Window();
+        win.setTitle("Update Notice (Order ID: " + orderId + ")");
+        win.setPosition("center");
+        win.setMode("highlighted");
+        win.setWidth("400px");
+        win.setHeight("250px");
+        win.setBorder("normal");
+        win.setClosable(true);
+        win.setSizable(true);
+
+        Vbox vbox = new Vbox();
+        vbox.setWidth("100%");
+        vbox.setHeight("100%");
+        vbox.setPack("center");
+        vbox.setAlign("center");
+        win.appendChild(vbox);
+
+        Label lbl = new Label("Enter Notice:");
+        vbox.appendChild(lbl);
+
+        final Textbox txt = new Textbox(notice);
+        txt.setRows(3);
+        txt.setWidth("90%");
+        txt.setStyle("font-size: 16px; padding: 5px;");
+        vbox.appendChild(txt);
+
+        Button btnSave = new Button("Save");
+        btnSave.setSclass("btn-primary"); // Assuming bootstrap theme or similar
+        btnSave.setStyle("margin-top: 10px; font-weight: bold; padding: 5px 20px;");
+        btnSave.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+            public void onEvent(Event e) {
+                updateOrderNotice(orderId, txt.getValue());
+                win.detach();
+            }
+        });
+        vbox.appendChild(btnSave);
+
+        this.appendChild(win);
     }
 
     private String lastDivId = null; // Store ID to reuse
@@ -662,6 +770,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
      * @param resourceId ID of the resource (S_Resource_ID) to display KPI for
      */
     private void showResourceDialog(final int resourceId) {
+        final int[] highlightId = { -1 };
         String resName = DB.getSQLValueString(null, "SELECT Name FROM S_Resource WHERE S_Resource_ID=?", resourceId);
 
         final org.zkoss.zul.Window kpiWindow = new org.zkoss.zul.Window();
@@ -729,10 +838,10 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                                                                                                                                                                                                                                            // extra
                                                                                                                                                                                                                                                            // button
 
-                    // 1. Column Left: Stage + Image (33%)
+                    // 1. Column Left: Stage + Image (28%)
                     org.zkoss.zul.Div colLeft = new org.zkoss.zul.Div();
                     colLeft.setStyle(
-                            "width: 33%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;");
+                            "width: 28%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;");
                     card.appendChild(colLeft);
 
                     // Add Stage Badge
@@ -771,10 +880,10 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                         imgDiv.appendChild(noImg);
                     }
 
-                    // 2. Column Middle: Info (33%)
+                    // 2. Column Middle: Info (24%)
                     org.zkoss.zul.Vbox colMid = new org.zkoss.zul.Vbox();
                     colMid.setStyle(
-                            "width: 33%; height: 100%; padding: 0 20px; display: flex; flex-direction: column; justify-content: center;");
+                            "width: 24%; height: 100%; padding: 0 10px; display: flex; flex-direction: column; justify-content: center;");
                     card.appendChild(colMid);
 
                     org.zkoss.zul.Label lblOrder = new org.zkoss.zul.Label(
@@ -793,10 +902,28 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                     lblProdVal.setStyle("display: block; font-size: 28px; color: #7f8c8d; margin-top: 5px;");
                     colMid.appendChild(lblProdVal);
 
-                    // 3. Column Right: Stats & Rate (34%) + Scan Button
+                    // Notice Column (20%)
+                    org.zkoss.zul.Div colNotice = new org.zkoss.zul.Div();
+                    colNotice.setStyle(
+                            "width: 20%; height: 100%; padding: 0 5px; display: flex; flex-direction: column; align-items: center; justify-content: center;");
+                    card.appendChild(colNotice);
+
+                    if (task.notice != null && !task.notice.isEmpty()) {
+                        org.zkoss.zul.Label lblNotice = new org.zkoss.zul.Label(task.notice);
+                        lblNotice.setStyle(
+                                "background: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 5px; font-size: 48px; font-weight: bold; line-height: 1.2; width: 100%; display: block; word-break: break-word; text-align: center;");
+                        colNotice.appendChild(lblNotice);
+
+                        // Flash Highlighting
+                        if (task.id == highlightId[0]) {
+                            lblNotice.setSclass("flash-highlight");
+                        }
+                    }
+
+                    // 3. Column Right: Stats & Rate (28%) + Scan Button
                     org.zkoss.zul.Vbox colRight = new org.zkoss.zul.Vbox();
                     colRight.setStyle(
-                            "width: 34%; height: 100%; padding: 0 20px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end;"); // Align
+                            "width: 28%; height: 100%; padding: 0 10px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end;"); // Align
                                                                                                                                                                   // items
                                                                                                                                                                   // to
                                                                                                                                                                   // flex-end
@@ -864,7 +991,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         // Subscribe to Real-time Events
         final org.zkoss.zk.ui.Desktop kpiDesktop = org.zkoss.zk.ui.Executions.getCurrent().getDesktop();
-        subscribeKPIDialogToEvents(kpiDesktop, refreshListWrapper[0], resName);
+        subscribeKPIDialogToEvents(kpiDesktop, refreshListWrapper[0], highlightId, resName);
 
         kpiWindow.doModal();
     }
@@ -938,7 +1065,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
      * @param resourceName    Name of resource (for logging purposes)
      */
     private void subscribeKPIDialogToEvents(final org.zkoss.zk.ui.Desktop kpiDesktop, final Runnable refreshCallback,
-            final String resourceName) {
+            final int[] highlightId, final String resourceName) {
         System.out.println("=== DEBUG: [KPI Dialog] Subscribing to EventQueue for resource: " + resourceName);
 
         try {
@@ -965,6 +1092,10 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                             + kpiDesktop.getId());
 
                                     // Refresh the entire KPI display
+                                    // Refresh the entire KPI display
+                                    if (data != null && data.length > 0) {
+                                        highlightId[0] = (Integer) data[0];
+                                    }
                                     refreshCallback.run();
 
                                     // Show visual notification
@@ -1694,6 +1825,22 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             }
         });
         popup.appendChild(itemMaterial);
+
+        // 4. Update Notice
+        org.zkoss.zul.Menuitem itemNotice = new org.zkoss.zul.Menuitem("Notice");
+        if (ThemeManager.isUseFontIconForImage())
+            itemNotice.setIconSclass("z-icon-Message");
+        itemNotice.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+            public void onEvent(Event event) throws Exception {
+                // Fire custom event to Self for handling
+                Events.postEvent("onNotice", WProductionSchedule.this, new org.zkoss.json.JSONObject() {
+                    {
+                        put("id", orderId);
+                    }
+                });
+            }
+        });
+        popup.appendChild(itemNotice);
 
         popup.appendChild(new org.zkoss.zul.Menuseparator());
         // ------------------------
