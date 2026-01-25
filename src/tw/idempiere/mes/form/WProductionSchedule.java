@@ -75,6 +75,8 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
     // ==================== UI Constants ====================
 
+    private static final String VERSION = "1.2.0"; // Current System Version
+
     // Window Dimensions
     private static final String WINDOW_WIDTH_FULL = "100%";
     private static final String WINDOW_HEIGHT_FULL = "100%";
@@ -165,7 +167,15 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         layout.appendChild(north);
         Hbox toolbar = new Hbox();
         north.appendChild(toolbar);
-        toolbar.setStyle("padding: 5px;");
+        toolbar.setStyle("padding: 5px; align-items: center;");
+
+        // Project Title & Version
+        Label lblTitle = new Label("iDempiere Taiwan MES " + VERSION);
+        lblTitle.setStyle("font-weight: bold; font-size: 18px; color: #2c3e50; margin-right: 15px; margin-left: 5px;");
+        toolbar.appendChild(lblTitle);
+
+        toolbar.appendChild(new Separator("vertical"));
+        toolbar.appendChild(new Space());
 
         btnRefresh = new Button("Refresh");
         if (ThemeManager.isUseFontIconForImage())
@@ -531,6 +541,27 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         DB.executeUpdate("UPDATE PP_Order SET Description=? WHERE PP_Order_ID=?", new Object[] { newDesc, orderId },
                 false, null);
+
+        // Publish EventQueue event to notify KPI Dialogs
+        try {
+            int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", orderId);
+
+            System.out.println("=== DEBUG: [Context Menu] Publishing stage change event for Order ID: " + orderId
+                    + ", Stage: " + stage);
+
+            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
+                    EVENT_QUEUE_NAME,
+                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
+                    true);
+
+            Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { orderId, productId, 0 });
+            queue.publish(updateEvent);
+
+            System.out.println("=== DEBUG: [Context Menu] Event published successfully");
+        } catch (Exception ex) {
+            System.err.println("=== DEBUG: [Context Menu] Failed to publish event: " + ex.getMessage());
+        }
+
         refreshTimeline();
     }
 
@@ -579,7 +610,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         options.append(" 'groupOrder': 'content',");
         // Enable Editing
         options.append(" 'editable': { 'updateTime': true, 'updateGroup': true },");
-        options.append(" 'stack': false,");
+        options.append(" 'stack': true,");
         options.append(" 'zoomMin': ").append(1000 * 60 * 60 * 24).append(",");
         options.append(" 'timeAxis': { 'scale': 'day', 'step': 1 },");
         options.append(" 'format': { 'minorLabels': { 'day': 'D' }, 'majorLabels': { 'day': 'ddd D MMMM' } },");
@@ -698,15 +729,20 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                                                                                                                                                                                                                                            // extra
                                                                                                                                                                                                                                                            // button
 
-                    // 1. Column Left: Image (33%)
+                    // 1. Column Left: Stage + Image (33%)
                     org.zkoss.zul.Div colLeft = new org.zkoss.zul.Div();
                     colLeft.setStyle(
-                            "width: 33%; height: 100%; display: flex; align-items: center; justify-content: center;");
+                            "width: 33%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;");
                     card.appendChild(colLeft);
+
+                    // Add Stage Badge
+                    String stage = extractStage(task.description);
+                    org.zkoss.zul.Div stageBadge = createStageBadge(stage);
+                    colLeft.appendChild(stageBadge);
 
                     org.zkoss.zul.Div imgDiv = new org.zkoss.zul.Div();
                     imgDiv.setStyle(
-                            "width: 250px; height: 250px; display: flex; align-items: center; justify-content: center; background-color: #f0f0f0; border-radius: 12px; overflow: hidden; box-shadow: inset 0 0 5px rgba(0,0,0,0.1);");
+                            "width: 220px; height: 220px; display: flex; align-items: center; justify-content: center; background-color: #f0f0f0; border-radius: 12px; overflow: hidden; box-shadow: inset 0 0 5px rgba(0,0,0,0.1);");
                     colLeft.appendChild(imgDiv);
 
                     // Try to get Product Image
@@ -957,6 +993,59 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             System.err.println("=== DEBUG: [KPI Dialog] EXCEPTION in subscription:");
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Extracts stage name from PP_Order Description field.
+     * 
+     * @param description PP_Order.Description (e.g., "Stage: Sewing")
+     * @return Stage name (e.g., "Sewing") or null if not found
+     */
+    private String extractStage(String description) {
+        if (description == null || description.trim().isEmpty()) {
+            return null;
+        }
+
+        // Parse "Stage: Sewing" format
+        if (description.startsWith("Stage: ")) {
+            return description.substring(7).trim();
+        }
+
+        return null;
+    }
+
+    /**
+     * Creates stage badge component for KPI dialog order cards.
+     * 
+     * @param stage Stage name extracted from Description
+     * @return Configured Div with stage badge (icon + label)
+     */
+    private org.zkoss.zul.Div createStageBadge(String stage) {
+        org.zkoss.zul.Div badge = new org.zkoss.zul.Div();
+
+        // Use centralized stage configuration
+        tw.idempiere.mes.model.StageConfig stageConfig = tw.idempiere.mes.model.StageConfig.fromName(stage);
+        String icon = stageConfig.getIcon();
+        String label = stageConfig.getLabel();
+        String bgColor = stageConfig.getColor();
+
+        badge.setStyle(
+                "background-color: " + bgColor + "; " +
+                        "color: white; " +
+                        "padding: 10px 15px; " +
+                        "border-radius: 8px; " +
+                        "font-size: 20px; " +
+                        "font-weight: bold; " +
+                        "text-align: center; " +
+                        "margin-bottom: 15px; " +
+                        "box-shadow: 0 2px 4px rgba(0,0,0,0.3); " +
+                        "min-width: 180px;");
+
+        org.zkoss.zul.Label badgeLabel = new org.zkoss.zul.Label(icon + " " + label);
+        badgeLabel.setStyle("color: white; font-size: 18px;");
+        badge.appendChild(badgeLabel);
+
+        return badge;
     }
 
     /**
@@ -1276,6 +1365,26 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
             if (no > 0) {
                 Clients.showNotification(msg, "info", null, "middle_center", 3000);
+
+                // Publish EventQueue event to notify KPI Dialogs
+                try {
+                    // Get Product ID for the event
+                    int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", id);
+
+                    System.out.println("=== DEBUG: [Timeline Update] Publishing event for Order ID: " + id);
+
+                    org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
+                            EVENT_QUEUE_NAME,
+                            org.zkoss.zk.ui.event.EventQueues.APPLICATION,
+                            true);
+
+                    Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { id, productId, 0 });
+                    queue.publish(updateEvent);
+
+                    System.out.println("=== DEBUG: [Timeline Update] Event published successfully");
+                } catch (Exception ex) {
+                    System.err.println("=== DEBUG: [Timeline Update] Failed to publish event: " + ex.getMessage());
+                }
             } else {
                 Clients.showNotification("Save Failed", "error", null, "middle_center", 2000);
                 refreshTimeline(); // Revert

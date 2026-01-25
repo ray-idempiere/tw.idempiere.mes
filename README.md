@@ -1,5 +1,15 @@
 # MES Production Schedule - Technical Architecture
 
+## Version History
+
+| Version | Date | Summary |
+|---------|------|---------|
+| **1.2.0** | 2026-01-25 | **Production Stage Icons & Timeline Synchronization**<br>• Added centralized `StageConfig` enum for unified stage management<br>• Implemented stage icon display in Timeline and KPI Dialog (✂️ Cutting, 🧵 Sewing, 📦 Packing, 🧱 Material Issue)<br>• Added EventQueue publishing for Timeline drag-and-drop operations<br>• Added EventQueue publishing for context menu stage changes<br>• Complete cross-browser synchronization across all update scenarios |
+| **1.1.0** | 2024-12-XX | **Real-time Cross-Browser Synchronization**<br>• Implemented ZK EventQueue for real-time updates<br>• Added barcode scanning with automatic KPI Dialog refresh<br>• Server push support for Timeline and KPI Dialog subscribers |
+| **1.0.0** | 2024-XX-XX | **Initial Release**<br>• Timeline visualization with Vis.js library<br>• Resource KPI Dialog with product image display<br>• Drag-and-drop order scheduling<br>• Daily production tracking and statistics |
+
+---
+
 ## System Overview
 
 The MES Production Schedule system is a comprehensive web-based manufacturing execution interface built on the iDempiere ERP platform. It provides real-time visualization and management of production orders across manufacturing resources using an interactive timeline interface.
@@ -58,6 +68,7 @@ class TimelineItem {
     int productId;            // M_Product_ID
     BigDecimal qtyOrdered;    // Target quantity
     BigDecimal qtyDelivered;  // Actual quantity
+    String description;       // PP_Order.Description (contains Stage info)
 }
 ```
 
@@ -537,6 +548,176 @@ Add to `WEB-INF/zk.xml`:
 2. **No Historical Events**: Late-joining subscribers don't see past events
 3. **No Guaranteed Delivery**: If browser is offline during publish, update is lost
 4. **Single Event Type**: All updates use same `MES_UPDATE` event name
+
+---
+
+## Production Stage Icon System
+
+### Overview
+
+The system displays production stage icons consistently across Timeline and KPI Dialog views using a centralized configuration (`StageConfig`). Stage information is stored in `PP_Order.Description` field in format: `"Stage: [StageName]"`.
+
+### StageConfig Enum
+
+**Location**: `tw.idempiere.mes.model.StageConfig`
+
+```java
+public enum StageConfig {
+    CUTTING("Cutting", "✂️", "#f44336"),           // Red
+    SEWING("Sewing", "🧵", "#9c27b0"),             // Purple  
+    PACKING("Packing", "📦", "#ff9800"),           // Orange
+    MATERIAL_ISSUE("Material Issue", "🧱", "#2196f3"),  // Blue
+    UNKNOWN("Unknown", "❓", "#6c757d");            // Gray
+    
+    public String getLabel();
+    public String getIcon();
+    public String getColor();
+    public static StageConfig fromName(String name);
+}
+```
+
+### Stage Definitions
+
+| Stage | Icon | Color | Hex Code | Usage |
+|-------|------|-------|----------|-------|
+| Cutting | ✂️ | Red | `#f44336` | Cutting operations |
+| Sewing | 🧵 | Purple | `#9c27b0` | Sewing/stitching operations |
+| Packing | 📦 | Orange | `#ff9800` | Packaging operations |
+| Material Issue | 🧱 | Blue | `#2196f3` | Material preparation/issue |
+| Unknown | ❓ | Gray | `#6c757d` | No stage specified |
+
+### Timeline Display
+
+**Icon Format**: `[icon] [ProductValue] (delivered/ordered)`
+
+Example: `🧵 ABC-001 (75/100)`
+
+**Implementation** (`MESService.getItemsJSON()`):
+```java
+String stageName = extractStageName(desc);
+StageConfig stageConfig = StageConfig.fromName(stageName);
+String icon = stageConfig.getIcon() + " ";
+String content = icon + prodValue + " (" + qtyDelivered + "/" + qty + ")";
+```
+
+### KPI Dialog Display
+
+**Badge Format**: Stage badge displayed above product image in each order card.
+
+```
+┌──────────────────┐
+│ ┌──────────┐     │
+│ │ 🧵 Sewing │    │
+│ └──────────┘     │
+│   [Product]      │
+│   [Image]        │
+└──────────────────┘
+```
+
+**Implementation** (`WProductionSchedule.createStageBadge()`):
+```java
+StageConfig stageConfig = StageConfig.fromName(stage);
+badge.setStyle("background-color: " + stageConfig.getColor() + "; ...");
+label.setText(stageConfig.getIcon() + " " + stageConfig.getLabel());
+```
+
+### Benefits
+
+1. **Consistency**: Single source of truth ensures Timeline and KPI Dialog display identical icons
+2. **Maintainability**: Change icon/color in one place (`StageConfig`) applies everywhere
+3. **Type Safety**: Enum prevents typos and invalid stage names
+4. **Extensibility**: Adding new stages requires only updating the enum
+
+---
+
+## Timeline Update EventQueue Publishing
+
+### Overview
+
+In addition to barcode scanning, the system publishes EventQueue events when orders are updated via Timeline interactions (drag-and-drop, context menu stage changes). This ensures KPI Dialogs automatically refresh across browsers.
+
+### Event Publishers
+
+| Action | Method | Trigger | Event Data |
+|--------|--------|---------|------------|
+| Barcode Scan | `showPackingDialog()` | Product scanned | `[orderId, productId, qty]` |
+| Timeline Drag | `updateOrder()` | Order moved/rescheduled | `[orderId, productId, 0]` |
+| Context Menu | `updateOrderStage()` | Stage changed (Cutting/Sewing/etc) | `[orderId, productId, 0]` |
+
+### Implementation: Timeline Drag
+
+**Method**: `WProductionSchedule.updateOrder()`
+
+When user drags an order on Timeline to change time/resource:
+
+```java
+// After successful DB update
+if (no > 0) {
+    Clients.showNotification(msg, "info", null, "middle_center", 3000);
+    
+    // Publish EventQueue event
+    int productId = DB.getSQLValue(null, 
+        "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", id);
+    
+    EventQueue<Event> queue = EventQueues.lookup(
+        EVENT_QUEUE_NAME, 
+        EventQueues.APPLICATION, 
+        true);
+    
+    Event updateEvent = new Event(EVENT_NAME_UPDATE, null, 
+        new Object[] { id, productId, 0 });
+    queue.publish(updateEvent);
+}
+```
+
+### Implementation: Context Menu Stage Change
+
+**Method**: `WProductionSchedule.updateOrderStage()`
+
+When user right-clicks order and selects "Process Set" (Cutting/Sewing/etc) or "Material Issue":
+
+```java
+DB.executeUpdate("UPDATE PP_Order SET Description=? WHERE PP_Order_ID=?", 
+    new Object[] { newDesc, orderId }, false, null);
+
+// Publish EventQueue event
+int productId = DB.getSQLValue(null, 
+    "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", orderId);
+
+EventQueue<Event> queue = EventQueues.lookup(
+    EVENT_QUEUE_NAME, 
+    EventQueues.APPLICATION, 
+    true);
+
+Event updateEvent = new Event(EVENT_NAME_UPDATE, null, 
+    new Object[] { orderId, productId, 0 });
+queue.publish(updateEvent);
+
+refreshTimeline();
+```
+
+### Complete Synchronization Matrix
+
+| Publisher | Action | Timeline Refreshes | KPI Dialog Refreshes |
+|-----------|--------|-------------------|---------------------|
+| Barcode Dialog | Scan product | ✅ | ✅ |
+| Timeline | Drag order (reschedule) | ✅ | ✅ |
+| Timeline | Context menu → Process Set | ✅ | ✅ |
+| Timeline | Context menu → Material Issue | ✅ | ✅ |
+
+### Console Logging
+
+All event publishing operations log to console for debugging:
+
+```
+=== DEBUG: [Timeline Update] Publishing event for Order ID: 123
+=== DEBUG: [Timeline Update] Event published successfully
+```
+
+```
+=== DEBUG: [Context Menu] Publishing stage change event for Order ID: 123, Stage: Cutting
+=== DEBUG: [Context Menu] Event published successfully
+```
 
 ### Future Enhancements
 
