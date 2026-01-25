@@ -520,8 +520,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             updateOrderStage(orderId, stage);
         } else if (event.getName().equals("onMaterialIssue")) {
             int orderId = (Integer) event.getData();
-            updateOrderStage(orderId, "Material Issue");
-            Clients.showNotification("Material Issue Requested", "info", null, "middle_center", 2000);
+            showMaterialIssueDialog(orderId);
         } else if (event.getName().equals("onNotice")) {
             int orderId = (Integer) ((org.zkoss.json.JSONObject) event.getData()).get("id");
             showNoticeDialog(orderId);
@@ -535,7 +534,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     private void updateOrderStage(int orderId, String stage) {
         // Update Description to include Stage Info
         // Clean existing stage info if any "Stage: ..."
-        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM PP_Order WHERE PP_Order_ID=?",
+        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM M_Production WHERE M_Production_ID=?",
                 orderId);
         if (currentDesc == null)
             currentDesc = "";
@@ -551,12 +550,14 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             newDesc += "Stage: " + stage;
         }
 
-        DB.executeUpdate("UPDATE PP_Order SET Description=? WHERE PP_Order_ID=?", new Object[] { newDesc, orderId },
+        DB.executeUpdate("UPDATE M_Production SET Description=? WHERE M_Production_ID=?",
+                new Object[] { newDesc, orderId },
                 false, null);
 
         // Publish EventQueue event to notify KPI Dialogs
         try {
-            int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", orderId);
+            int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM M_Production WHERE M_Production_ID=?",
+                    orderId);
 
             System.out.println("=== DEBUG: [Context Menu] Publishing stage change event for Order ID: " + orderId
                     + ", Stage: " + stage);
@@ -578,7 +579,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     }
 
     private void updateOrderNotice(int orderId, String notice) {
-        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM PP_Order WHERE PP_Order_ID=?",
+        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM M_Production WHERE M_Production_ID=?",
                 orderId);
         if (currentDesc == null)
             currentDesc = "";
@@ -595,12 +596,14 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             newDesc += "Notice: " + cleanNotice;
         }
 
-        DB.executeUpdate("UPDATE PP_Order SET Description=? WHERE PP_Order_ID=?", new Object[] { newDesc, orderId },
+        DB.executeUpdate("UPDATE M_Production SET Description=? WHERE M_Production_ID=?",
+                new Object[] { newDesc, orderId },
                 false, null);
 
         // Publish EventQueue event to notify KPI Dialogs
         try {
-            int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", orderId);
+            int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM M_Production WHERE M_Production_ID=?",
+                    orderId);
 
             System.out.println("=== DEBUG: [Context Menu] Publishing notice change event for Order ID: " + orderId);
 
@@ -621,7 +624,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     }
 
     private void showNoticeDialog(final int orderId) {
-        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM PP_Order WHERE PP_Order_ID=?",
+        String currentDesc = DB.getSQLValueString(null, "SELECT Description FROM M_Production WHERE M_Production_ID=?",
                 orderId);
         // Extract existing notice
         String notice = "";
@@ -671,6 +674,570 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         vbox.appendChild(btnSave);
 
         this.appendChild(win);
+    }
+
+    /**
+     * BOM Component data structure
+     */
+    private static class BOMComponent {
+        int productId;
+        String productName;
+        String productValue;
+        BigDecimal bomQty;
+        BigDecimal requiredQty;
+        String uom;
+    }
+
+    /**
+     * Shows Material Issue - creates draft M_Movement and opens Movement Window
+     */
+    private void showMaterialIssueDialog(final int orderId) {
+        try {
+            // Get Order info
+            String sql = "SELECT DocumentNo, M_Product_ID, ProductionQty FROM M_Production WHERE M_Production_ID=?";
+            PreparedStatement pstmt = null;
+            ResultSet rs = null;
+
+            String documentNo;
+            int productId;
+            BigDecimal qtyOrdered;
+
+            try {
+                pstmt = DB.prepareStatement(sql, null);
+                pstmt.setInt(1, orderId);
+                rs = pstmt.executeQuery();
+                if (rs.next()) {
+                    documentNo = rs.getString("DocumentNo");
+                    productId = rs.getInt("M_Product_ID");
+                    qtyOrdered = rs.getBigDecimal("ProductionQty");
+                } else {
+                    Clients.showNotification("Order not found", "error", null, NOTIFY_POS_CENTER,
+                            NOTIFY_DURATION_NORMAL);
+                    return;
+                }
+            } finally {
+                DB.close(rs, pstmt);
+            }
+
+            // Check if Movement already exists for this order using M_Production_ID FK
+            String movementSql = "SELECT M_Movement_ID, DocStatus FROM M_Movement " +
+                    "WHERE M_Production_ID=? ORDER BY Created DESC";
+
+            int existingMovementId = -1;
+            String movementDocStatus = null;
+
+            try {
+                pstmt = DB.prepareStatement(movementSql, null);
+                pstmt.setInt(1, orderId);
+                rs = pstmt.executeQuery();
+                if (rs.next()) {
+                    existingMovementId = rs.getInt("M_Movement_ID");
+                    movementDocStatus = rs.getString("DocStatus");
+                }
+            } finally {
+                DB.close(rs, pstmt);
+            }
+
+            int movementId;
+
+            if (existingMovementId > 0) {
+                // Open existing Movement
+                movementId = existingMovementId;
+                log.info("Opening existing Movement ID: " + movementId + " (Status: " + movementDocStatus
+                        + ") for Order: " + documentNo);
+
+                // If Movement is completed, update order stage to Cutting
+                if ("CO".equals(movementDocStatus)) {
+                    String currentStage = DB.getSQLValueString(null,
+                            "SELECT Description FROM M_Production WHERE M_Production_ID=?", orderId);
+
+                    if (currentStage == null || !currentStage.contains("Stage: Cutting")) {
+                        updateOrderStage(orderId, "Cutting");
+                        log.info("Updated order stage to Cutting (Movement already completed)");
+                    }
+                }
+            } else {
+                // Create new draft Movement
+                movementId = createDraftMaterialMovement(orderId, documentNo, productId, qtyOrdered);
+
+                if (movementId <= 0) {
+                    Clients.showNotification("Failed to create Material Movement", "error", null, NOTIFY_POS_CENTER,
+                            NOTIFY_DURATION_NORMAL);
+                    return;
+                }
+
+                // Update Order stage to "Material Issue"
+                updateOrderStage(orderId, "Material Issue");
+
+                log.info("Created draft Movement ID: " + movementId + " for Order: " + documentNo);
+            }
+
+            // Open Movement Window
+            openMovementWindow(movementId);
+
+            Clients.showNotification("Material Issue Movement opened", "info", null, NOTIFY_POS_TOP_RIGHT,
+                    NOTIFY_DURATION_NORMAL);
+
+        } catch (Exception e) {
+            log.severe("Error in showMaterialIssueDialog: " + e.getMessage());
+            e.printStackTrace();
+            Clients.showNotification("Error: " + e.getMessage(), "error", null, NOTIFY_POS_CENTER,
+                    NOTIFY_DURATION_LONG);
+        }
+    }
+
+    /**
+     * Creates a draft M_Movement document with BOM components
+     */
+    private int createDraftMaterialMovement(int orderId, String orderDocNo, int productId, BigDecimal qtyOrdered) {
+        String trxName = Trx.createTrxName("MatIssueDraft");
+        Trx trx = null;
+
+        try {
+            trx = Trx.get(trxName, true);
+
+            log.info("Creating draft Movement for Order: " + orderDocNo + ", Product: " + productId);
+
+            // Check if draft Movement already exists for this Production
+            log.info("Checking for existing draft Movement for Production ID: " + orderId);
+
+            int existingMovementId = DB.getSQLValue(null,
+                    "SELECT M_Movement_ID FROM M_Movement " +
+                            "WHERE M_Production_ID=? AND DocStatus='DR' AND IsActive='Y' " +
+                            "ORDER BY Created DESC",
+                    orderId);
+
+            log.info("Existing Movement ID found: " + existingMovementId);
+
+            if (existingMovementId > 0) {
+                log.warning("Draft Movement already exists for this Production: " + existingMovementId);
+
+                // Get Movement DocumentNo for user message
+                String existingDocNo = DB.getSQLValueString(null,
+                        "SELECT DocumentNo FROM M_Movement WHERE M_Movement_ID=?", existingMovementId);
+
+                Clients.showNotification(
+                        "Draft Movement already exists: " + existingDocNo +
+                                ". Please complete or delete it first.",
+                        "warning", null, NOTIFY_POS_CENTER, NOTIFY_DURATION_LONG);
+                trx.close();
+                return existingMovementId; // Return existing Movement ID
+            }
+
+            log.info("No existing draft Movement found, proceeding to create new one");
+
+            // Get Resource name from M_Production
+            String resourceName = DB.getSQLValueString(null,
+                    "SELECT r.Name FROM S_Resource r " +
+                            "JOIN M_Production o ON r.S_Resource_ID = o.S_Resource_ID " +
+                            "WHERE o.M_Production_ID = ?",
+                    orderId);
+
+            if (resourceName != null) {
+                log.info("Order assigned to Resource: " + resourceName);
+            }
+
+            // Get warehouse configuration
+            int warehouseId = Env.getContextAsInt(Env.getCtx(), "#M_Warehouse_ID");
+            if (warehouseId <= 0) {
+                warehouseId = DB.getSQLValue(null, "SELECT MIN(M_Warehouse_ID) FROM M_Warehouse WHERE IsActive='Y'");
+            }
+
+            log.info("Using Warehouse ID: " + warehouseId);
+
+            if (warehouseId <= 0) {
+                log.severe("No active warehouse found!");
+                trx.rollback();
+                trx.close();
+                Clients.showNotification("No active warehouse found", "error", null, NOTIFY_POS_CENTER,
+                        NOTIFY_DURATION_LONG);
+                return -1;
+            }
+
+            // Get default locators
+            int fromLocatorId = DB.getSQLValue(null,
+                    "SELECT M_Locator_ID FROM M_Locator WHERE M_Warehouse_ID=? AND IsDefault='Y' ORDER BY M_Locator_ID",
+                    warehouseId);
+
+            int toLocatorId = -1;
+
+            // Priority 1: Try to match Resource name to Locator name
+            if (resourceName != null && !resourceName.isEmpty()) {
+                toLocatorId = DB.getSQLValue(null,
+                        "SELECT M_Locator_ID FROM M_Locator WHERE M_Warehouse_ID=? AND Value=? AND IsActive='Y'",
+                        warehouseId, resourceName);
+
+                if (toLocatorId > 0) {
+                    log.info("Found matching locator for resource: " + resourceName + " -> Locator ID: " + toLocatorId);
+                }
+            }
+
+            // Priority 2: Try generic production locator
+            if (toLocatorId <= 0) {
+                toLocatorId = DB.getSQLValue(null,
+                        "SELECT M_Locator_ID FROM M_Locator WHERE M_Warehouse_ID=? AND (Value LIKE '%PROD%' OR Value LIKE '%生產%') ORDER BY M_Locator_ID",
+                        warehouseId);
+            }
+
+            // If production locator not found or same as from, get any different locator
+            if (toLocatorId <= 0 || toLocatorId == fromLocatorId) {
+                toLocatorId = DB.getSQLValue(null,
+                        "SELECT M_Locator_ID FROM M_Locator WHERE M_Warehouse_ID=? AND M_Locator_ID != ? ORDER BY M_Locator_ID",
+                        warehouseId, fromLocatorId);
+            }
+
+            log.info("From Locator: " + fromLocatorId + ", To Locator: " + toLocatorId);
+
+            if (fromLocatorId <= 0 || toLocatorId <= 0 || fromLocatorId == toLocatorId) {
+                log.severe("Invalid locators! From: " + fromLocatorId + ", To: " + toLocatorId);
+                trx.rollback();
+                trx.close();
+                Clients.showNotification("Invalid warehouse locators - need at least 2 different locators in warehouse",
+                        "error", null, NOTIFY_POS_CENTER,
+                        NOTIFY_DURATION_LONG);
+                return -1;
+            }
+
+            // Create Movement Header
+            org.compiere.model.MMovement movement = new org.compiere.model.MMovement(Env.getCtx(), 0, trxName);
+            movement.setMovementDate(new Timestamp(System.currentTimeMillis()));
+            movement.setDescription("Material Issue for Order: " + orderDocNo);
+
+            // Set M_Production_ID for proper FK relationship - MUST be set before save
+            movement.set_ValueOfColumn("M_Production_ID", orderId);
+
+            log.info("Setting M_Production_ID to: " + orderId + " on Movement");
+
+            if (!movement.save()) {
+                log.severe("Failed to save M_Movement header: " + movement.getProcessMsg());
+                trx.rollback();
+                trx.close();
+                Clients.showNotification("Failed to save Movement: " + movement.getProcessMsg(), "error", null,
+                        NOTIFY_POS_CENTER, NOTIFY_DURATION_LONG);
+                return -1;
+            }
+
+            // Verify M_Production_ID was saved
+            int savedProductionId = movement.get_ValueAsInt("M_Production_ID");
+            log.info("Movement created: " + movement.getM_Movement_ID() +
+                    ", M_Production_ID saved as: " + savedProductionId);
+
+            if (savedProductionId != orderId) {
+                log.severe("M_Production_ID not saved correctly! Expected: " + orderId + ", Got: " + savedProductionId);
+            }
+
+            // Get BOM Components
+            String bomSql = "SELECT bom.M_ProductBOM_ID, bom.BOMQty " +
+                    "FROM M_Product_BOM bom " +
+                    "WHERE bom.M_Product_ID = ? AND bom.IsActive='Y'";
+
+            PreparedStatement pstmt = null;
+            ResultSet rs = null;
+            int lineCount = 0;
+
+            try {
+                pstmt = DB.prepareStatement(bomSql, trxName);
+                pstmt.setInt(1, productId);
+                rs = pstmt.executeQuery();
+
+                while (rs.next()) {
+                    int componentProductId = rs.getInt("M_ProductBOM_ID");
+                    BigDecimal bomQty = rs.getBigDecimal("BOMQty");
+                    BigDecimal requiredQty = bomQty.multiply(qtyOrdered);
+
+                    log.info("Adding BOM line: Product=" + componentProductId + ", Qty=" + requiredQty);
+
+                    // Create Movement Line
+                    org.compiere.model.MMovementLine line = new org.compiere.model.MMovementLine(movement);
+                    line.setM_Product_ID(componentProductId);
+                    line.setM_Locator_ID(fromLocatorId);
+                    line.setM_LocatorTo_ID(toLocatorId);
+                    line.setMovementQty(requiredQty);
+
+                    if (!line.save()) {
+                        log.severe("Failed to save M_MovementLine for product: " + componentProductId);
+                        trx.rollback();
+                        trx.close();
+                        Clients.showNotification("Failed to save movement line for product: " + componentProductId,
+                                "error", null,
+                                NOTIFY_POS_CENTER, NOTIFY_DURATION_LONG);
+                        return -1;
+                    }
+                    lineCount++;
+                }
+            } finally {
+                DB.close(rs, pstmt);
+            }
+
+            log.info("Created " + lineCount + " movement lines");
+
+            if (lineCount == 0) {
+                log.warning("No BOM components found for product: " + productId);
+                Clients.showNotification("Warning: No BOM components found", "warning", null, NOTIFY_POS_CENTER,
+                        NOTIFY_DURATION_NORMAL);
+            }
+
+            // Save as DRAFT (do NOT complete)
+            movement.saveEx();
+            trx.commit();
+            trx.close();
+
+            log.info("Draft Movement created successfully: " + movement.getM_Movement_ID());
+            return movement.getM_Movement_ID();
+
+        } catch (Exception e) {
+            log.severe("Error creating draft material movement: " + e.getMessage());
+            e.printStackTrace();
+            if (trx != null) {
+                trx.rollback();
+                trx.close();
+            }
+            Clients.showNotification("Error: " + e.getMessage(), "error", null, NOTIFY_POS_CENTER,
+                    NOTIFY_DURATION_LONG);
+            return -1;
+        }
+    }
+
+    /**
+     * Opens the Movement Window for editing
+     */
+    private void openMovementWindow(int movementId) {
+        try {
+            // Find Movement Window
+            int AD_Window_ID = DB.getSQLValue(null,
+                    "SELECT AD_Window_ID FROM AD_Window WHERE Name='Material Movement' AND IsActive='Y'");
+
+            if (AD_Window_ID <= 0) {
+                // Fallback: Try to find ANY window for M_Movement table
+                int AD_Table_ID = MTable.getTable_ID("M_Movement");
+                AD_Window_ID = DB.getSQLValue(null,
+                        "SELECT AD_Window_ID FROM AD_Tab WHERE AD_Table_ID=? AND IsActive='Y' ORDER BY IsSortTab",
+                        AD_Table_ID);
+            }
+
+            if (AD_Window_ID > 0) {
+                MQuery query = new MQuery("M_Movement");
+                query.addRestriction("M_Movement_ID", MQuery.EQUAL, movementId);
+                AEnv.zoom(AD_Window_ID, query);
+            } else {
+                Clients.showNotification("Movement Window not found", "error", null, NOTIFY_POS_CENTER,
+                        NOTIFY_DURATION_NORMAL);
+            }
+        } catch (Exception e) {
+            log.severe("Error opening Movement Window: " + e.getMessage());
+            e.printStackTrace();
+            Clients.showNotification("Error opening window: " + e.getMessage(), "error", null, NOTIFY_POS_CENTER,
+                    NOTIFY_DURATION_NORMAL);
+        }
+    }
+
+    /**
+     * Shows Complete Order confirmation dialog
+     */
+    private void showCompleteOrderDialog(final int orderId) {
+        // Get Order info
+        String sql = "SELECT DocumentNo, M_Product_ID, ProductionQty, QtyDelivered FROM M_Production WHERE M_Production_ID=?";
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+
+        final String documentNo;
+        final BigDecimal qtyOrdered;
+        final BigDecimal qtyDelivered;
+
+        try {
+            pstmt = DB.prepareStatement(sql, null);
+            pstmt.setInt(1, orderId);
+            rs = pstmt.executeQuery();
+            if (rs.next()) {
+                documentNo = rs.getString("DocumentNo");
+                int productId = rs.getInt("M_Product_ID");
+                qtyOrdered = rs.getBigDecimal("ProductionQty");
+                qtyDelivered = rs.getBigDecimal("QtyDelivered") != null ? rs.getBigDecimal("QtyDelivered")
+                        : BigDecimal.ZERO;
+            } else {
+                Clients.showNotification("Order not found", "error", null, NOTIFY_POS_CENTER, NOTIFY_DURATION_NORMAL);
+                return;
+            }
+        } catch (SQLException e) {
+            log.severe("Failed to load order: " + e.getMessage());
+            Clients.showNotification("Database error", "error", null, NOTIFY_POS_CENTER, NOTIFY_DURATION_NORMAL);
+            return;
+        } finally {
+            DB.close(rs, pstmt);
+        }
+
+        // Create Dialog
+        final Window win = new Window();
+        win.setTitle("Complete Order Confirmation");
+        win.setPosition("center");
+        win.setMode("highlighted");
+        win.setWidth("450px");
+        win.setHeight("300px");
+        win.setBorder("normal");
+        win.setClosable(true);
+
+        Vbox vbox = new Vbox();
+        vbox.setWidth("100%");
+        vbox.setHeight("100%");
+        vbox.setStyle("padding: 20px;");
+        vbox.setAlign("center");
+        win.appendChild(vbox);
+
+        // Info
+        Label lblOrder = new Label("Order: " + documentNo);
+        lblOrder.setStyle("font-size: 18px; font-weight: bold; margin-bottom: 10px;");
+        vbox.appendChild(lblOrder);
+
+        Label lblQty = new Label("Target: " + qtyOrdered + " | Delivered: " + qtyDelivered);
+        lblQty.setStyle("font-size: 16px; margin-bottom: 20px;");
+        vbox.appendChild(lblQty);
+
+        Label lblConfirm = new Label("Confirm order completion?");
+        lblConfirm.setStyle("font-size: 14px; color: #666; margin-bottom: 20px;");
+        vbox.appendChild(lblConfirm);
+
+        // Notes (optional)
+        Label lblNotes = new Label("Notes (Optional):");
+        lblNotes.setStyle("align-self: flex-start; margin-bottom: 5px;");
+        vbox.appendChild(lblNotes);
+
+        final Textbox txtNotes = new Textbox();
+        txtNotes.setRows(3);
+        txtNotes.setWidth("95%");
+        txtNotes.setStyle("font-size: 14px;");
+        vbox.appendChild(txtNotes);
+
+        vbox.appendChild(new Separator());
+
+        // Buttons
+        Hbox btnBox = new Hbox();
+        btnBox.setStyle("margin-top: 15px;");
+        btnBox.setAlign("center");
+        btnBox.setPack("center");
+        vbox.appendChild(btnBox);
+
+        Button btnConfirm = new Button("✓ Confirm Complete");
+        btnConfirm
+                .setStyle("font-size: 16px; font-weight: bold; padding: 10px 20px; background: #28a745; color: white;");
+        btnConfirm.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+            public void onEvent(Event e) {
+                // Update DocStatus to Completed
+                String notes = txtNotes.getValue();
+                if (completeOrder(orderId, notes)) {
+                    Clients.showNotification("✓ Order " + documentNo + " completed successfully!", "info", null,
+                            NOTIFY_POS_TOP_RIGHT, NOTIFY_DURATION_EXTRA);
+                    win.detach();
+                } else {
+                    Clients.showNotification("Failed to complete order", "error", null, NOTIFY_POS_CENTER,
+                            NOTIFY_DURATION_NORMAL);
+                }
+            }
+        });
+        btnBox.appendChild(btnConfirm);
+
+        btnBox.appendChild(new Space());
+
+        Button btnCancel = new Button("Cancel");
+        btnCancel.setStyle("font-size: 16px; padding: 10px 20px;");
+        btnCancel.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+            public void onEvent(Event e) {
+                win.detach();
+            }
+        });
+        btnBox.appendChild(btnCancel);
+
+        this.appendChild(win);
+    }
+
+    /**
+     * Completes a production order
+     */
+    private boolean completeOrder(int orderId, String notes) {
+        String trxName = Trx.createTrxName("CompleteOrder");
+        Trx trx = null;
+
+        try {
+            trx = Trx.get(trxName, true);
+
+            // Load M_Production using MProduction class (implements DocAction)
+            org.compiere.model.MProduction production = new org.compiere.model.MProduction(Env.getCtx(), orderId,
+                    trxName);
+
+            if (production.get_ID() <= 0) {
+                log.severe("M_Production not found: " + orderId);
+                trx.rollback();
+                trx.close();
+                return false;
+            }
+
+            // Add notes if provided
+            if (notes != null && !notes.trim().isEmpty()) {
+                String currentDesc = production.getDescription();
+                String newDesc = (currentDesc != null ? currentDesc + "\nCompletion Notes: " : "") + notes.trim();
+                production.setDescription(newDesc);
+            }
+
+            // Check current status
+            String currentStatus = production.getDocStatus();
+            String documentNo = production.getDocumentNo();
+            log.info("Current DocStatus: " + currentStatus + " for Production: " + documentNo);
+
+            // Set DocAction to Complete
+            production.setDocAction(org.compiere.process.DocAction.ACTION_Complete);
+
+            // Process the document (this will trigger all validations and posting)
+            if (!production.processIt(org.compiere.process.DocAction.ACTION_Complete)) {
+                String errorMsg = production.getProcessMsg();
+                log.severe("Failed to complete M_Production: " + errorMsg);
+                trx.rollback();
+                trx.close();
+                Clients.showNotification("Failed to complete production: " + errorMsg, "error", null,
+                        NOTIFY_POS_CENTER, NOTIFY_DURATION_LONG);
+                return false;
+            }
+
+            // Save the production (saveEx throws exception on error)
+            production.saveEx();
+
+            // Commit transaction
+            trx.commit();
+            trx.close();
+
+            log.info("Successfully completed M_Production: " + documentNo +
+                    " (DocStatus: " + production.getDocStatus() + ")");
+
+            // Update stage to Completed
+            updateOrderStage(orderId, "Completed");
+
+            // Publish EventQueue event
+            try {
+                int productId = production.getM_Product_ID();
+
+                org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
+                        EVENT_QUEUE_NAME,
+                        org.zkoss.zk.ui.event.EventQueues.APPLICATION,
+                        true);
+
+                Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { orderId, productId, 0 });
+                queue.publish(updateEvent);
+            } catch (Exception ex) {
+                log.warning("Failed to publish completion event: " + ex.getMessage());
+            }
+
+            refreshTimeline();
+            return true;
+
+        } catch (Exception e) {
+            log.severe("Error completing production: " + e.getMessage());
+            e.printStackTrace();
+            if (trx != null) {
+                trx.rollback();
+                trx.close();
+            }
+            Clients.showNotification("Error: " + e.getMessage(), "error", null,
+                    NOTIFY_POS_CENTER, NOTIFY_DURATION_LONG);
+            return false;
+        }
     }
 
     private String lastDivId = null; // Store ID to reuse
@@ -725,12 +1292,12 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         // Dates logic
         if (chkTVMode != null && chkTVMode.isChecked()) {
-            // TV Mode: 1 Week range
-            options.append(" 'start': new Date(),");
+            // TV Mode: 1 Week range starting from today 08:00
+            options.append(" 'start': (function(){ var d = new Date(); d.setHours(8,0,0,0); return d; })(),");
             options.append(" 'end': (function(){ var d = new Date(); d.setDate(d.getDate()+7); return d; })(),");
         } else {
-            // Normal Mode: 1 Month range
-            options.append(" 'start': new Date(),");
+            // Normal Mode: 1 Month range starting from today 08:00
+            options.append(" 'start': (function(){ var d = new Date(); d.setHours(8,0,0,0); return d; })(),");
             options.append(" 'end': (function(){ var d = new Date(); d.setMonth(d.getMonth()+1); return d; })(),");
         }
 
@@ -966,6 +1533,29 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                             });
                     colRight.appendChild(btnScanOrder);
 
+                    // Add Complete Order Button (only if eligible)
+                    if (delivered.compareTo(target) >= 0) {
+                        // Check if order is not already completed
+                        String docStatus = DB.getSQLValueString(null,
+                                "SELECT DocStatus FROM M_Production WHERE DocumentNo=?", task.documentNo);
+
+                        if (docStatus == null || !docStatus.equals("CO")) {
+                            // Get Order ID from DocumentNo
+                            final int orderId = DB.getSQLValue(null,
+                                    "SELECT M_Production_ID FROM M_Production WHERE DocumentNo=?", task.documentNo);
+                            org.zkoss.zul.Button btnComplete = new org.zkoss.zul.Button("✓ Complete Order");
+                            btnComplete.setStyle(
+                                    "font-size: 18px; font-weight: bold; height: 45px; width: 100%; max-width: 250px; margin-top: 15px; background: #28a745; color: white;");
+                            btnComplete.addEventListener(org.zkoss.zk.ui.event.Events.ON_CLICK,
+                                    new org.zkoss.zk.ui.event.EventListener<org.zkoss.zk.ui.event.Event>() {
+                                        public void onEvent(org.zkoss.zk.ui.event.Event event) throws Exception {
+                                            showCompleteOrderDialog(orderId);
+                                        }
+                                    });
+                            colRight.appendChild(btnComplete);
+                        }
+                    }
+
                     orderCardsContainer.appendChild(card);
                 }
             }
@@ -1101,7 +1691,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                     // Show visual notification
                                     int orderId = (Integer) data[0];
                                     String docNo = DB.getSQLValueString(null,
-                                            "SELECT DocumentNo FROM PP_Order WHERE PP_Order_ID=?", orderId);
+                                            "SELECT DocumentNo FROM M_Production WHERE M_Production_ID=?", orderId);
 
                                     org.zkoss.zk.ui.util.Clients.showNotification(
                                             "🔴 Remote Scan! Order " + docNo + " updated",
@@ -1221,7 +1811,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                     // Show notification
                                     int orderId = (Integer) data[0];
                                     String docNo = DB.getSQLValueString(null,
-                                            "SELECT DocumentNo FROM PP_Order WHERE PP_Order_ID=?", orderId);
+                                            "SELECT DocumentNo FROM M_Production WHERE M_Production_ID=?", orderId);
 
                                     org.zkoss.zk.ui.util.Clients.showNotification(
                                             "🔄 Order " + docNo + " updated - Timeline refreshed",
@@ -1357,8 +1947,22 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
                             // Get the Order ID for event publishing
                             int orderId = DB.getSQLValue(null,
-                                    "SELECT PP_Order_ID FROM PP_Order WHERE DocumentNo=? AND M_Product_ID=?",
+                                    "SELECT M_Production_ID FROM M_Production WHERE DocumentNo=? AND M_Product_ID=?",
                                     orderNo, productId);
+
+                            // Auto-update Stage to "Packing" if not already
+                            try {
+                                String currentStage = DB.getSQLValueString(null,
+                                        "SELECT Description FROM M_Production WHERE M_Production_ID=?", orderId);
+                                if (currentStage == null || !currentStage.contains("Stage: Packing")) {
+                                    updateOrderStage(orderId, "Packing");
+                                    System.out.println(
+                                            "=== DEBUG: [Packing Dialog] Auto-updated stage to Packing for Order ID: "
+                                                    + orderId);
+                                }
+                            } catch (Exception stageEx) {
+                                log.warning("Failed to auto-update stage: " + stageEx.getMessage());
+                            }
 
                             // Publish Event to notify all open dialogs
                             System.out.println("=== DEBUG: [Packing Dialog] *** PUBLISHING EVENT *** OrderID: "
@@ -1416,9 +2020,25 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
      * @return true if update was successful, false otherwise
      */
     private boolean updateProductionOrderQty(String documentNo, int productId, int qtyToAdd) {
-        String sql = "UPDATE PP_Order SET QtyDelivered = QtyDelivered + ? WHERE DocumentNo = ? AND M_Product_ID = ?";
-        int no = DB.executeUpdate(sql, new Object[] { qtyToAdd, documentNo, productId }, false, null);
-        return no > 0;
+        // 1. Update M_Production.QtyDelivered
+        String sqlProd = "UPDATE M_Production " +
+                "SET QtyDelivered = COALESCE(QtyDelivered, 0) + ? " +
+                "WHERE DocumentNo = ? AND M_Product_ID = ?";
+        int noProd = DB.executeUpdate(sqlProd, new Object[] { qtyToAdd, documentNo, productId }, false, null);
+
+        // 2. Sync to M_ProductionLine.MovementQty (IsEndProduct='Y')
+        // New Requirement: Overwrite MovementQty with actual delivered quantity
+        String sqlLine = "UPDATE M_ProductionLine pl " +
+                "SET MovementQty = COALESCE((SELECT QtyDelivered FROM M_Production WHERE DocumentNo = ? AND M_Product_ID = ?), 0) "
+                +
+                "WHERE pl.M_Production_ID = (" +
+                "  SELECT M_Production_ID FROM M_Production " +
+                "  WHERE DocumentNo = ? AND M_Product_ID = ?" +
+                ") AND pl.IsEndProduct = 'Y' AND pl.M_Product_ID = ?";
+        DB.executeUpdate(sqlLine, new Object[] { documentNo, productId, documentNo, productId, productId }, false,
+                null);
+
+        return noProd > 0;
     }
 
     /**
@@ -1479,7 +2099,8 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
             // 3. Check for Resource Change & Notification
             String msg = "Saved";
-            int oldResourceId = DB.getSQLValue(null, "SELECT S_Resource_ID FROM PP_Order WHERE PP_Order_ID=?", id);
+            int oldResourceId = DB.getSQLValue(null, "SELECT S_Resource_ID FROM M_Production WHERE M_Production_ID=?",
+                    id);
 
             if (oldResourceId != resourceId && oldResourceId > 0) {
                 String oldName = DB.getSQLValueString(null, "SELECT Name FROM S_Resource WHERE S_Resource_ID=?",
@@ -1491,7 +2112,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             }
 
             // 4. Update
-            String sql = "UPDATE PP_Order SET S_Resource_ID=?, DateStartSchedule=?, DateFinishSchedule=? WHERE PP_Order_ID=?";
+            String sql = "UPDATE M_Production SET S_Resource_ID=?, DateStartSchedule=?, DateFinishSchedule=? WHERE M_Production_ID=?";
             int no = DB.executeUpdate(sql, new Object[] { resourceId, startTime, endTime, id }, false, null);
 
             if (no > 0) {
@@ -1500,7 +2121,8 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                 // Publish EventQueue event to notify KPI Dialogs
                 try {
                     // Get Product ID for the event
-                    int productId = DB.getSQLValue(null, "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", id);
+                    int productId = DB.getSQLValue(null,
+                            "SELECT M_Product_ID FROM M_Production WHERE M_Production_ID=?", id);
 
                     System.out.println("=== DEBUG: [Timeline Update] Publishing event for Order ID: " + id);
 
@@ -1632,7 +2254,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     }
 
     private void generateOrders(int C_OrderLine_ID, int S_Resource_ID, Window win) {
-        Trx trx = Trx.get(Trx.createTrxName("GenPP"), true);
+        Trx trx = Trx.get(Trx.createTrxName("GenProd"), true);
         try {
             MOrderLine oLine = new MOrderLine(Env.getCtx(), C_OrderLine_ID, trx.getTrxName());
             MResource resource = new MResource(Env.getCtx(), S_Resource_ID, trx.getTrxName());
@@ -1654,83 +2276,87 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             cal.set(Calendar.SECOND, 0);
             cal.set(Calendar.MILLISECOND, 0);
 
-            int Table_ID = DB.getSQLValue(trx.getTrxName(),
-                    "SELECT AD_Table_ID FROM AD_Table WHERE TableName='PP_Order'");
-            if (Table_ID <= 0)
-                throw new AdempiereException("PP_Order Table not found");
-
-            org.compiere.model.MTable table = org.compiere.model.MTable.get(Env.getCtx(), Table_ID);
-
-            // Find DocType
-            int C_DocType_ID = DB.getSQLValue(trx.getTrxName(),
-                    "SELECT C_DocType_ID FROM C_DocType WHERE DocBaseType='MO' AND IsActive='Y' ORDER BY IsDefault DESC");
-            if (C_DocType_ID <= 0) {
-                C_DocType_ID = DB.getSQLValue(trx.getTrxName(),
-                        "SELECT C_DocType_ID FROM C_DocType WHERE IsActive='Y' AND Name LIKE '%Production%' AND AD_Client_ID=?",
-                        Env.getAD_Client_ID(Env.getCtx()));
-            }
-
-            int AD_Workflow_ID = DB.getSQLValue(trx.getTrxName(),
-                    "SELECT AD_Workflow_ID FROM AD_Workflow WHERE IsActive='Y' AND AD_Client_ID=? AND Value LIKE '%Process_Production%' ORDER BY IsDefault DESC",
-                    Env.getAD_Client_ID(Env.getCtx()));
-            if (AD_Workflow_ID <= 0) {
-                AD_Workflow_ID = DB.getSQLValue(trx.getTrxName(),
-                        "SELECT AD_Workflow_ID FROM AD_Workflow WHERE IsActive='Y' AND AD_Client_ID=? ORDER BY Created DESC",
-                        Env.getAD_Client_ID(Env.getCtx()));
-            }
-
-            int PP_Product_BOM_ID = DB.getSQLValue(trx.getTrxName(),
-                    "SELECT PP_Product_BOM_ID FROM PP_Product_BOM WHERE M_Product_ID=? AND IsActive='Y' ORDER BY Created DESC",
+            // Find M_Product_BOM instead of PP_Product_BOM
+            int M_Product_BOM_ID = DB.getSQLValue(trx.getTrxName(),
+                    "SELECT M_Product_BOM_ID FROM M_Product_BOM WHERE M_Product_ID=? AND IsActive='Y' ORDER BY Created DESC",
                     oLine.getM_Product_ID());
 
-            // If no BOM found, handled by not setting or handle specific logic.
-            // Constraint says not null, so if 0, we have an issue.
-            if (PP_Product_BOM_ID <= 0) {
-                // Try generic or create dummy? For now let's hope data exists.
-                // Actually we can try to look for ANY BOM if specific product bom not exists?
-                // NO.
-                // Just warning if 0.
+            // Determine Warehouse from Resource, fallback to Order Line
+            int M_Warehouse_ID = resource.getM_Warehouse_ID();
+            if (M_Warehouse_ID == 0)
+                M_Warehouse_ID = oLine.getM_Warehouse_ID();
+
+            // 1. Try to find Locator with same name as Resource (in same Org)
+            int M_Locator_ID = DB.getSQLValue(trx.getTrxName(),
+                    "SELECT M_Locator_ID FROM M_Locator WHERE AD_Org_ID=? AND Value=? AND IsActive='Y' ORDER BY Created DESC",
+                    oLine.getAD_Org_ID(), resource.getName());
+
+            // 2. If not found by Name, try by Value (in same Org)
+            if (M_Locator_ID <= 0) {
+                M_Locator_ID = DB.getSQLValue(trx.getTrxName(),
+                        "SELECT M_Locator_ID FROM M_Locator WHERE AD_Org_ID=? AND Value=? AND IsActive='Y' ORDER BY Created DESC",
+                        oLine.getAD_Org_ID(), resource.getValue());
             }
 
-            int lineNo = 10;
+            // 3. Fallback: Default locator for warehouse (Use Order Line Warehouse)
+            if (M_Locator_ID <= 0) {
+                M_Locator_ID = DB.getSQLValue(trx.getTrxName(),
+                        "SELECT M_Locator_ID FROM M_Locator WHERE M_Warehouse_ID=? AND IsDefault='Y' AND IsActive='Y'",
+                        oLine.getM_Warehouse_ID());
+            }
+
+            // 4. Fallback: Any locator in Order Line Warehouse
+            if (M_Locator_ID <= 0) {
+                M_Locator_ID = DB.getSQLValue(trx.getTrxName(),
+                        "SELECT M_Locator_ID FROM M_Locator WHERE M_Warehouse_ID=? AND IsActive='Y' ORDER BY Created",
+                        oLine.getM_Warehouse_ID());
+            }
+
+            int count = 0;
             while (remaining.compareTo(BigDecimal.ZERO) > 0) {
+                // Skip Sundays
+                if (cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) {
+                    cal.add(Calendar.DAY_OF_YEAR, 1);
+                    continue;
+                }
                 BigDecimal daysProduction = dailyCapacity;
                 if (remaining.compareTo(dailyCapacity) < 0) {
                     daysProduction = remaining;
                 }
 
-                PO ppOrder = table.getPO(0, trx.getTrxName());
+                // Create M_Production using MProduction class
+                org.compiere.model.MProduction production = new org.compiere.model.MProduction(Env.getCtx(), 0,
+                        trx.getTrxName());
 
-                ppOrder.set_ValueNoCheck("AD_Org_ID", oLine.getAD_Org_ID());
-                ppOrder.set_ValueNoCheck("Line", lineNo);
-                lineNo += 10;
-                ppOrder.set_ValueNoCheck("C_OrderLine_ID", C_OrderLine_ID);
+                production.setAD_Org_ID(oLine.getAD_Org_ID());
+                production.setM_Product_ID(oLine.getM_Product_ID());
+                production.setProductionQty(daysProduction);
+                production.setMovementDate(new Timestamp(cal.getTimeInMillis()));
+                production.setM_Locator_ID(M_Locator_ID);
 
-                if (AD_Workflow_ID > 0)
-                    ppOrder.set_ValueNoCheck("AD_Workflow_ID", AD_Workflow_ID);
-                if (PP_Product_BOM_ID > 0)
-                    ppOrder.set_ValueNoCheck("PP_Product_BOM_ID", PP_Product_BOM_ID);
+                // Set S_Resource_ID (custom column)
+                production.set_ValueOfColumn("S_Resource_ID", S_Resource_ID);
 
-                ppOrder.set_ValueNoCheck("PriorityRule", "5"); // Medium
-                ppOrder.set_ValueNoCheck("S_Resource_ID", S_Resource_ID);
-                ppOrder.set_ValueNoCheck("M_Product_ID", oLine.getM_Product_ID());
-                ppOrder.set_ValueNoCheck("M_Warehouse_ID", oLine.getM_Warehouse_ID());
-                ppOrder.set_ValueNoCheck("C_UOM_ID", oLine.getC_UOM_ID());
-                ppOrder.set_ValueNoCheck("QtyOrdered", daysProduction);
-                ppOrder.set_ValueNoCheck("DateOrdered", new Timestamp(System.currentTimeMillis()));
-                ppOrder.set_ValueNoCheck("DateStartSchedule", new Timestamp(cal.getTimeInMillis()));
+                // Set C_OrderLine_ID (custom column)
+                production.set_ValueOfColumn("C_OrderLine_ID", C_OrderLine_ID);
 
-                Calendar endCal = (Calendar) cal.clone();
-                endCal.set(Calendar.HOUR_OF_DAY, 17); // 5 PM
-                ppOrder.set_ValueNoCheck("DateFinishSchedule", new Timestamp(endCal.getTimeInMillis()));
-                ppOrder.set_ValueNoCheck("DatePromised", new Timestamp(endCal.getTimeInMillis()));
+                // Initialize QtyDelivered to 0
+                production.set_ValueOfColumn("QtyDelivered", BigDecimal.ZERO);
 
-                ppOrder.set_ValueNoCheck("DocStatus", "DR");
-                if (C_DocType_ID > 0)
-                    ppOrder.set_ValueNoCheck("C_DocType_ID", C_DocType_ID);
+                // Set description with order line reference
+                production.setDescription("Generated from Order Line: " + oLine.getParent().getDocumentNo() +
+                        " - Line " + oLine.getLine());
 
-                ppOrder.saveEx();
+                production.saveEx();
 
+                // Generate Production Lines (BOM Explosion)
+                // This is required to have valid production records for material
+                int linesCreated = production.createLines(false);
+                if (linesCreated == 0) {
+                    log.warning("No Production Lines created for Product: " + oLine.getM_Product_ID());
+                }
+
+                count++;
                 remaining = remaining.subtract(daysProduction);
                 cal.add(Calendar.DAY_OF_YEAR, 1);
             }
@@ -1738,11 +2364,11 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             trx.commit();
             win.detach();
             refreshTimeline();
-            FDialog.info(0, win, "Generated Orders");
+            FDialog.info(0, win, "Generated " + count + " Production Orders");
 
         } catch (Exception e) {
             trx.rollback();
-            log.log(Level.SEVERE, "Gen Error", e);
+            log.log(Level.SEVERE, "Generate Production Error", e);
             String msg = e.getMessage();
             if (msg == null)
                 msg = e.toString();
@@ -1770,24 +2396,23 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         itemOpen.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
             public void onEvent(Event event) throws Exception {
-                // Try finding Window by Name
+                // Find Window by M_Production table
+                int AD_Table_ID = MTable.getTable_ID("M_Production");
                 int AD_Window_ID = DB.getSQLValue(null,
-                        "SELECT AD_Window_ID FROM AD_Window WHERE Name='Manufacturing Order' AND IsActive='Y'");
-
-                if (AD_Window_ID <= 0) {
-                    // Fallback: Try to find ANY window for PP_Order table
-                    int AD_Table_ID = MTable.getTable_ID("PP_Order");
-                    AD_Window_ID = DB.getSQLValue(null,
-                            "SELECT AD_Window_ID FROM AD_Tab WHERE AD_Table_ID=? AND IsActive='Y' ORDER BY IsSortTab",
-                            AD_Table_ID);
-                }
+                        "SELECT w.AD_Window_ID " +
+                                "FROM AD_Window w " +
+                                "INNER JOIN AD_Tab t ON w.AD_Window_ID = t.AD_Window_ID " +
+                                "WHERE t.AD_Table_ID=? AND w.IsActive='Y' AND t.IsActive='Y' " +
+                                "ORDER BY t.SeqNo " +
+                                "LIMIT 1",
+                        AD_Table_ID);
 
                 if (AD_Window_ID > 0) {
-                    MQuery query = new MQuery("PP_Order");
-                    query.addRestriction("PP_Order_ID", MQuery.EQUAL, orderId);
+                    MQuery query = new MQuery("M_Production");
+                    query.addRestriction("M_Production_ID", MQuery.EQUAL, orderId);
                     AEnv.zoom(AD_Window_ID, query);
                 } else {
-                    FDialog.warn(0, "Window Not Found", "Could not find Window for Manufacturing Order (PP_Order)");
+                    FDialog.warn(0, "Window Not Found", "Could not find Window for Production (M_Production)");
                 }
             }
         });

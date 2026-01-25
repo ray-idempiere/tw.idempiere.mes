@@ -4,10 +4,23 @@
 
 | Version | Date | Summary |
 |---------|------|---------|
+| **2.0.0** | 2026-01-26 | **M_Production Migration & Core Enhancements**<br>• **Migration to M_Production**: Replaced legacy `PP_Order` with standard `M_Production` table for iDempiere 12 compatibility<br>• **Delivered Quantity Tracking**: Added `QtyDelivered` to `M_Production` for accurate output tracking<br>• **Smart Scheduling**: Implemented Sunday exclusion and dynamic locator selection (Resource Name/Value/Org)<br>• **Resilient Order Generation**: Enabled order creation even with stock shortages (`createLines(false)`)<br>• **Model Validator**: Added automatic stage updates (Material Issue -> Cutting) on Movement completion |
 | **1.3.0** | 2026-01-25 | **Notice System & Alerting**<br>• Added "Notice" feature to Context Menu for assigning alerts to Orders<br>• Implemented real-time KPI Dialog updates with **Flashing Red Alert** effect for 10s<br>• Optimized Notice visibility with large 48px Bold font and text wrapping<br>• Enhanced timeline synchronization for notice updates |
 | **1.2.0** | 2026-01-25 | **Production Stage Icons & Timeline Synchronization**<br>• Added centralized `StageConfig` enum for unified stage management<br>• Implemented stage icon display in Timeline and KPI Dialog (✂️ Cutting, 🧵 Sewing, 📦 Packing, 🧱 Material Issue)<br>• Added EventQueue publishing for Timeline drag-and-drop operations<br>• Added EventQueue publishing for context menu stage changes<br>• Complete cross-browser synchronization across all update scenarios |
 | **1.1.0** | 2024-12-XX | **Real-time Cross-Browser Synchronization**<br>• Implemented ZK EventQueue for real-time updates<br>• Added barcode scanning with automatic KPI Dialog refresh<br>• Server push support for Timeline and KPI Dialog subscribers |
 | **1.0.0** | 2024-XX-XX | **Initial Release**<br>• Timeline visualization with Vis.js library<br>• Resource KPI Dialog with product image display<br>• Drag-and-drop order scheduling<br>• Daily production tracking and statistics |
+
+---
+
+## M_Production Migration (v2.0.0)
+
+Version 2.0.0 introduces a major architectural shift from `PP_Order` (Libero Manufacturing) to the standard `M_Production` table. This aligns with iDempiere 12 core functionality and simplifies the data model.
+
+**Key Changes:**
+- **Data Source**: Timeline and KPI views now query `M_Production` instead of `PP_Order`.
+- **Order Generation**: `Generate Orders` creates `M_Production` records.
+- **Resource Linking**: Added `S_Resource_ID` column to `M_Production` for scheduling.
+- **Tracking**: Added `QtyDelivered` to `M_Production` to track scanned/completed quantities independently of the BOM lines.
 
 ---
 

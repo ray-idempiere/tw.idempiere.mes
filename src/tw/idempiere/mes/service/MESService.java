@@ -127,10 +127,10 @@ public class MESService {
         Timestamp dateTo = new Timestamp(cal.getTimeInMillis());
 
         String sqlProd = "SELECT DISTINCT o.S_Resource_ID, p.Value " +
-                "FROM PP_Order o " +
+                "FROM M_Production o " +
                 "INNER JOIN M_Product p ON o.M_Product_ID = p.M_Product_ID " +
                 "WHERE o.IsActive='Y' " +
-                "AND o.DateStartSchedule >= ? AND o.DateFinishSchedule <= ? " +
+                "AND o.MovementDate >= ? AND o.MovementDate <= ? " +
                 "ORDER BY o.S_Resource_ID, p.Value";
 
         PreparedStatement pstmtProd = null;
@@ -183,13 +183,13 @@ public class MESService {
         cal.add(Calendar.MONTH, 4);
         Timestamp dateTo = new Timestamp(cal.getTimeInMillis());
 
-        String sql = "SELECT o.PP_Order_ID, o.DocumentNo, o.DateStartSchedule, o.DateFinishSchedule, o.S_Resource_ID, "
-                + "o.DocStatus, o.QtyOrdered, o.QtyDelivered, o.Description, p.Value as ProductValue, p.Name as ProductName, p.M_Product_ID "
+        String sql = "SELECT o.M_Production_ID, o.DocumentNo, o.MovementDate, o.S_Resource_ID, "
+                + "o.DocStatus, o.ProductionQty, o.QtyDelivered, o.Description, p.Value as ProductValue, p.Name as ProductName, p.M_Product_ID "
                 +
-                "FROM PP_Order o " +
+                "FROM M_Production o " +
                 "LEFT JOIN M_Product p ON o.M_Product_ID = p.M_Product_ID " +
                 "WHERE o.IsActive='Y' " +
-                "AND o.DateStartSchedule >= ? AND o.DateFinishSchedule <= ?";
+                "AND o.MovementDate >= ? AND o.MovementDate <= ?";
 
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -199,17 +199,16 @@ public class MESService {
             pstmt.setTimestamp(2, dateTo);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                int id = rs.getInt("PP_Order_ID");
+                int id = rs.getInt("M_Production_ID");
                 int resId = rs.getInt("S_Resource_ID");
                 String docNo = rs.getString("DocumentNo");
-                Timestamp start = rs.getTimestamp("DateStartSchedule");
-                Timestamp end = rs.getTimestamp("DateFinishSchedule");
+                Timestamp movementDate = rs.getTimestamp("MovementDate");
                 String docStatus = rs.getString("DocStatus");
                 String desc = rs.getString("Description"); // Fetch Description for Stage
                 if (desc == null)
                     desc = "";
 
-                BigDecimal qty = rs.getBigDecimal("QtyOrdered");
+                BigDecimal qty = rs.getBigDecimal("ProductionQty");
                 BigDecimal qtyDelivered = rs.getBigDecimal("QtyDelivered");
                 if (qtyDelivered == null)
                     qtyDelivered = BigDecimal.ZERO;
@@ -219,6 +218,25 @@ public class MESService {
                     prodValue = "";
                 String prodName = rs.getString("ProductName");
                 int prodId = rs.getInt("M_Product_ID");
+
+                // Calculate Timeline dates from MovementDate
+                // DateFrom = MovementDate + 08:00
+                // DateTo = MovementDate + 17:00
+                Calendar calStart = Calendar.getInstance();
+                calStart.setTime(movementDate);
+                calStart.set(Calendar.HOUR_OF_DAY, 8);
+                calStart.set(Calendar.MINUTE, 0);
+                calStart.set(Calendar.SECOND, 0);
+                calStart.set(Calendar.MILLISECOND, 0);
+                Timestamp start = new Timestamp(calStart.getTimeInMillis());
+
+                Calendar calEnd = Calendar.getInstance();
+                calEnd.setTime(movementDate);
+                calEnd.set(Calendar.HOUR_OF_DAY, 17);
+                calEnd.set(Calendar.MINUTE, 0);
+                calEnd.set(Calendar.SECOND, 0);
+                calEnd.set(Calendar.MILLISECOND, 0);
+                Timestamp end = new Timestamp(calEnd.getTimeInMillis());
 
                 // Get stage icon from centralized config
                 String stageName = extractStageName(desc);
@@ -245,14 +263,12 @@ public class MESService {
                 }
 
                 if (start != null && end != null) {
-                    if (end.before(start))
-                        end = start;
                     items.add(new TimelineItem(id, resId, content, start, end, title.toString(), className, docNo,
                             prodName, prodValue, qty, qtyDelivered, prodId, desc));
                 }
             }
         } catch (SQLException e) {
-            log.log(Level.SEVERE, "Failed to load orders: " + e.getMessage());
+            log.log(Level.SEVERE, "Failed to load productions: " + e.getMessage());
         } finally {
             DB.close(rs, pstmt);
         }
@@ -289,18 +305,20 @@ public class MESService {
         }
 
         String sql = "SELECT COUNT(*) as Total, " +
-                "SUM(CASE WHEN QtyDelivered >= QtyOrdered THEN 1 ELSE 0 END) as Completed, " +
-                "SUM(CASE WHEN DatePromised < SysDate AND QtyDelivered < QtyOrdered THEN 1 ELSE 0 END) as Late " +
-                "FROM PP_Order o " +
+                "SUM(CASE WHEN DocStatus IN ('CO', 'CL') THEN 1 ELSE 0 END) as Completed, " +
+                "SUM(CASE WHEN MovementDate < ? AND DocStatus NOT IN ('CO', 'CL') THEN 1 ELSE 0 END) as Late "
+                +
+                "FROM M_Production o " +
                 "WHERE o.IsActive='Y' " +
-                "AND o.DateStartSchedule >= ? AND o.DateFinishSchedule < ?";
+                "AND o.MovementDate >= ? AND o.MovementDate < ?";
 
         PreparedStatement pstmt = null;
         ResultSet rs = null;
         try {
             pstmt = DB.prepareStatement(sql, null);
-            pstmt.setTimestamp(1, dateFrom);
-            pstmt.setTimestamp(2, dateTo);
+            pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis()));
+            pstmt.setTimestamp(2, dateFrom);
+            pstmt.setTimestamp(3, dateTo);
             rs = pstmt.executeQuery();
             if (rs.next()) {
                 stats.total = rs.getInt("Total");
@@ -330,12 +348,15 @@ public class MESService {
         cal.add(Calendar.DAY_OF_MONTH, 1);
         Timestamp dateEnd = new Timestamp(cal.getTimeInMillis());
 
-        String sql = "SELECT o.PP_Order_ID, o.DocumentNo, o.DateStartSchedule, o.DateFinishSchedule, o.S_Resource_ID, "
-                + "o.DocStatus, o.QtyOrdered, o.QtyDelivered, o.Description, p.Value as ProductValue, p.Name as ProductName, p.M_Product_ID "
-                + "FROM PP_Order o "
-                + "LEFT JOIN M_Product p ON o.M_Product_ID = p.M_Product_ID "
-                + "WHERE o.IsActive='Y' AND o.S_Resource_ID=? "
-                + "AND o.DateFinishSchedule >= ? AND o.DateStartSchedule < ?"; // Overlap target date
+        String sql = "SELECT o.M_Production_ID, o.DocumentNo, o.MovementDate, " +
+                "o.MovementDate as DateFinishSchedule, o.S_Resource_ID, " +
+                "o.DocStatus, o.ProductionQty as QtyOrdered, " +
+                "COALESCE(o.QtyDelivered, 0) as QtyDelivered, " +
+                "o.Description, p.Value as ProductValue, p.Name as ProductName, p.M_Product_ID " +
+                "FROM M_Production o " +
+                "LEFT JOIN M_Product p ON o.M_Product_ID = p.M_Product_ID " +
+                "WHERE o.IsActive='Y' AND o.S_Resource_ID=? " +
+                "AND o.MovementDate >= ? AND o.MovementDate < ?"; // Overlap target date
 
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -346,9 +367,9 @@ public class MESService {
             pstmt.setTimestamp(3, dateEnd);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                int id = rs.getInt("PP_Order_ID");
+                int id = rs.getInt("M_Production_ID");
                 String docNo = rs.getString("DocumentNo");
-                Timestamp start = rs.getTimestamp("DateStartSchedule");
+                Timestamp start = rs.getTimestamp("MovementDate");
                 Timestamp end = rs.getTimestamp("DateFinishSchedule");
 
                 BigDecimal qty = rs.getBigDecimal("QtyOrdered");
@@ -376,10 +397,10 @@ public class MESService {
     }
 
     /**
-     * Extracts stage name from PP_Order Description field.
+     * Extracts stage name from M_Production Description field.
      * Parses "Stage: Sewing" format and returns "Sewing".
      *
-     * @param description PP_Order Description field
+     * @param description M_Production Description field
      * @return Stage name or null if not found
      */
     private String extractStageName(String description) {

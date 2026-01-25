@@ -1,10 +1,11 @@
 Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: MES
-Bundle-SymbolicName: tw.idempiere.mes
+Bundle-SymbolicName: tw.idempiere.mes;singleton:=true
 Bundle-Version: 1.0.0.qualifier
 Bundle-Vendor: Ray Lee
 Automatic-Module-Name: tw.idempiere.mes
+Bundle-ActivationPolicy: lazy
 Bundle-ClassPath: src/,
  .
 Require-Bundle: org.adempiere.ui.zk,
@@ -20,6 +21,8 @@ Require-Bundle: org.adempiere.ui.zk,
  zkbind,
  zkplus,
  zul
-Import-Package: com.google.gson
-Service-Component: OSGI-INF/tw.idempiere.mes.factories.MESFormFactory.xml
+Import-Package: com.google.gson,
+ org.osgi.service.component.annotations;version="[1.5.0,2.0.0]"
+Service-Component: OSGI-INF/tw.idempiere.mes.factories.MESFormFactory.xml,
+ OSGI-INF/tw.idempiere.mes.validator.MMovementValidator.xml
 
