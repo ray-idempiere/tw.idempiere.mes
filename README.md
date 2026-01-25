@@ -1,4 +1,4 @@
-# MES Production Schedule - Technical Architecture (Claude)
+# MES Production Schedule - Technical Architecture
 
 ## System Overview
 
@@ -267,16 +267,239 @@ sequenceDiagram
 - UI events → Debug level logging
 - Performance metrics → Optional profiling mode
 
+## Real-time Cross-Browser Synchronization (ZK EventQueue)
+
+### Overview
+
+The system implements **real-time cross-browser synchronization** using ZK Framework's EventQueue mechanism. When operators scan products in the barcode dialog on one browser, all other open KPI dialogs across different browsers/sessions automatically refresh to show updated quantities without manual refresh.
+
+### Architecture
+
+```mermaid
+sequenceDiagram
+    participant Browser1
+    participant Browser2
+    participant EventQueue
+    participant Database
+    
+    Browser1->>Database: Scan product (update QtyDelivered)
+    Browser1->>EventQueue: Publish MES_UPDATE event
+    EventQueue->>Browser2: Broadcast event to subscribers
+    Browser2->>Database: Query updated KPI data
+    Browser2->>Browser2: Refresh UI + Show notification
+```
+
+### Implementation Details
+
+#### Constants
+
+```java
+// Event Queue Configuration
+private static final String EVENT_QUEUE_NAME = "MesUpdateQueue";
+private static final String EVENT_NAME_UPDATE = "MES_UPDATE";
+```
+
+#### Publisher (Barcode Scan Dialog)
+
+**Location**: `showPackingDialog()` method, ~line 1010
+
+**Trigger**: After successful product scan and DB update
+
+```java
+// Publish event after successful scan
+int orderId = DB.getSQLValue(null,
+    "SELECT PP_Order_ID FROM PP_Order WHERE DocumentNo=? AND M_Product_ID=?",
+    orderNo, productId);
+
+EventQueue<Event> queue = EventQueues.lookup(
+    EVENT_QUEUE_NAME, 
+    EventQueues.APPLICATION, 
+    true);
+
+Event mesEvent = new Event(EVENT_NAME_UPDATE, null, 
+    new Object[] { orderId, productId, qty });
+queue.publish(mesEvent);
+```
+
+**Event Payload**:
+- `orderId` (Integer): PP_Order_ID that was updated
+- `productId` (Integer): M_Product_ID that was scanned
+- `qty` (Integer): Quantity that was added
+
+#### Subscriber (KPI Dialog)
+
+**Location**: `subscribeKPIDialogToEvents()` helper method, ~line 880
+
+**Lifecycle**: Subscribes when KPI dialog opens, unsubscribes when closed
+
+```java
+// Enable server push for real-time updates
+Executions.getCurrent().getDesktop().enableServerPush(true);
+
+// Subscribe to event queue
+EventQueue<Event> queue = EventQueues.lookup(
+    EVENT_QUEUE_NAME, 
+    EventQueues.APPLICATION, 
+    true);
+
+queue.subscribe(new EventListener<Event>() {
+    public void onEvent(Event event) throws Exception {
+        if (EVENT_NAME_UPDATE.equals(event.getName())) {
+            Object[] data = (Object[]) event.getData();
+            
+            // Schedule UI refresh on ZK desktop thread
+            Executions.schedule(kpiDesktop, new EventListener<Event>() {
+                public void onEvent(Event evt) throws Exception {
+                    refreshCallback.run();  // Reload KPI data
+                    
+                    // Show notification
+                    Clients.showNotification(
+                        "🔴 Remote Scan! Order " + docNo + " updated",
+                        "info", null, "top_right", 3000);
+                }
+            }, new Event("updateKPI"));
+        }
+    }
+});
+```
+
+### Server Push Configuration
+
+**Requirement**: ZK Server Push must be enabled for each Desktop that receives updates.
+
+```java
+// Enable in KPI dialog (subscriber)
+Executions.getCurrent().getDesktop().enableServerPush(true);
+```
+
+**Behavior**:
+- Push mode: Server polls client every ~10 seconds (default ZK polling interval)
+- Events are queued and delivered during next poll cycle
+- Typical latency: 1-10 seconds depending on server/network load
+
+### Event Flow Diagram
+
+```
+┌─────────────────────────┐         ┌─────────────────────────┐
+│   Browser A             │         │   Browser B             │
+│  ┌──────────────────┐   │         │  ┌──────────────────┐   │
+│  │  KPI Dialog      │   │         │  │  KPI Dialog      │   │
+│  │  (Subscriber)    │   │         │  │  (Subscriber)    │   │
+│  └──────────────────┘   │         │  └──────────────────┘   │
+│         ↑ ③              │         │         ↑ ③              │
+│         │                │         │         │                │
+│  ┌──────────────────┐   │         │  ┌──────────────────┐   │
+│  │  Scan Dialog     │   │         │  │  (Waiting...)    │   │
+│  │  ① Scan Product  │   │         │  │                  │   │
+│  │  ② Publish Event │───┼─────────┼─▶│ EventQueue       │   │
+│  └──────────────────┘   │         │  │ (Application     │   │
+│                          │         │  │  Scope)          │   │
+└─────────────────────────┘         └──┴──────────────────┴───┘
+                                         │                 │
+                                         └─────────────────┘
+                                    ③ Broadcast to all subscribers
+```
+
+### Performance Characteristics
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| **Latency** | 1-10 seconds | Depends on ZK polling interval |
+| **Scope** | Application-wide | All users, all sessions |
+| **Max Subscribers** | ~100 concurrent | ZK framework limit |
+| **Event Size** | <1KB | Payload: 3 integers |
+| **Server Load** | Low | Event queue is memory-based |
+
+### Debugging
+
+**Enable Debug Logging**:
+
+All EventQueue operations log to console with prefix `=== DEBUG:`
+
+```java
+// Publisher logs
+System.out.println("=== DEBUG: [Packing Dialog] *** PUBLISHING EVENT ***");
+System.out.println("=== DEBUG: [Packing Dialog] Queue retrieved: " + queue);
+System.out.println("=== DEBUG: [Packing Dialog] *** EVENT PUBLISHED SUCCESSFULLY ***");
+
+// Subscriber logs  
+System.out.println("=== DEBUG: [KPI Dialog] Subscribing to EventQueue");
+System.out.println("=== DEBUG: [KPI Dialog] *** EVENT RECEIVED *** Name: " + event.getName());
+System.out.println("=== DEBUG: [KPI Dialog] Scheduling refresh...");
+System.out.println("=== DEBUG: [KPI Dialog] Refresh completed!");
+```
+
+**Common Debug Scenarios**:
+
+1. **Event published but not received**:
+   - Check if subscriber desktop is still alive
+   - Verify server push is enabled
+   - Confirm event queue name matches (`MesUpdateQueue`)
+
+2. **Multiple refreshes triggered**:
+   - Normal if multiple KPI dialogs are open
+   - Each subscriber receives the broadcast independently
+
+3. **Delayed updates (>15 seconds)**:
+   - Network latency
+   - Server under heavy load
+   - Consider adjusting ZK polling interval in `zk.xml`
+
+### Configuration Options
+
+**To adjust polling interval** (optional, not recommended to change without testing):
+
+Add to `WEB-INF/zk.xml`:
+```xml
+<device-config>
+    <device-type>ajax</device-type>
+    <polling-interval>3000</polling-interval> <!-- milliseconds -->
+</device-config>
+```
+
+**Trade-offs**:
+- Shorter interval = faster updates, higher server load
+- Longer interval = lower load, slower updates
+- Default (no config) = ~10 seconds, balanced performance
+
+### Security Considerations
+
+**Access Control**:
+- EventQueue is application-scoped (shared across all users)
+- No built-in authorization - all users receive all events
+- Events contain only IDs, not sensitive product/order data
+- Actual data queried from database respects iDempiere RBAC
+
+**Best Practices**:
+- Don't publish sensitive data in event payload
+- Use IDs only, fetch details server-side
+- Validate orderId/productId before processing events
+
+### Limitations
+
+1. **Polling Mode**: Uses ZK's default polling, not true WebSocket push
+2. **No Historical Events**: Late-joining subscribers don't see past events
+3. **No Guaranteed Delivery**: If browser is offline during publish, update is lost
+4. **Single Event Type**: All updates use same `MES_UPDATE` event name
+
+### Future Enhancements
+
+To improve real-time performance:
+1. Enable ZK Comet or WebSocket mode for sub-second latency
+2. Implement event replay for late joiners
+3. Add event filtering by resource/product
+4. Implement delivery confirmation/acknowledgment
+
 ## Future Enhancement Recommendations
 
-1. **Real-time Updates**: Implement WebSocket for live order status changes
+1. **WebSocket Push**: Upgrade from polling to WebSocket for <1s latency
 2. **Drag-and-Drop Scheduling**: Make timeline editable for manual scheduling
 3. **Mobile Responsiveness**: Optimize KPI dialog for tablet viewing
 4. **Export Functionality**: Add PDF/Excel export for schedule reports
 5. **Advanced Filtering**: Multi-resource and product category filters
 
 
-# MES Production Schedule - User Guide (Claude)
+# MES Production Schedule - User Guide
 
 ## Introduction
 
