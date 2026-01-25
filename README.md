@@ -273,21 +273,31 @@ sequenceDiagram
 
 The system implements **real-time cross-browser synchronization** using ZK Framework's EventQueue mechanism. When operators scan products in the barcode dialog on one browser, all other open KPI dialogs across different browsers/sessions automatically refresh to show updated quantities without manual refresh.
 
+
 ### Architecture
+
+The EventQueue enables **two types of subscribers**:
+1. **KPI Dialog**: Auto-refreshes when viewing a specific resource
+2. **Timeline View**: Auto-refreshes the main schedule view
 
 ```mermaid
 sequenceDiagram
     participant Browser1
-    participant Browser2
+    participant Browser2_Timeline
+    participant Browser2_KPI
     participant EventQueue
     participant Database
     
     Browser1->>Database: Scan product (update QtyDelivered)
     Browser1->>EventQueue: Publish MES_UPDATE event
-    EventQueue->>Browser2: Broadcast event to subscribers
-    Browser2->>Database: Query updated KPI data
-    Browser2->>Browser2: Refresh UI + Show notification
+    EventQueue->>Browser2_Timeline: Broadcast to Timeline subscriber
+    EventQueue->>Browser2_KPI: Broadcast to KPI Dialog subscriber
+    Browser2_Timeline->>Database: Query updated timeline data
+    Browser2_Timeline->>Browser2_Timeline: Refresh Timeline + Show notification
+    Browser2_KPI->>Database: Query updated KPI data
+    Browser2_KPI->>Browser2_KPI: Refresh KPI cards + Show notification
 ```
+
 
 ### Implementation Details
 
@@ -363,6 +373,44 @@ queue.subscribe(new EventListener<Event>() {
 });
 ```
 
+#### Subscriber #2: Timeline View
+
+**Location**: `subscribeTimelineToEvents()` helper method, ~line 968
+
+**Lifecycle**: Subscribes when Timeline initializes (in `initForm()`), active for entire session
+
+```java
+// Enable server push for Timeline
+Desktop timelineDesktop = Executions.getCurrent().getDesktop();
+timelineDesktop.enableServerPush(true);
+
+// Subscribe to event queue
+EventQueue<Event> queue = EventQueues.lookup(
+    EVENT_QUEUE_NAME, 
+    EventQueues.APPLICATION, 
+    true);
+
+queue.subscribe(new EventListener<Event>() {
+    public void onEvent(Event event) throws Exception {
+        if (EVENT_NAME_UPDATE.equals(event.getName())) {
+            Object[] data = (Object[]) event.getData();
+            
+            // Schedule Timeline refresh on ZK desktop thread
+            Executions.schedule(timelineDesktop, new EventListener<Event>() {
+                public void onEvent(Event evt) throws Exception {
+                    refreshTimeline();  // Reload entire Timeline
+                    
+                    // Show notification
+                    Clients.showNotification(
+                        "🔄 Order " + docNo + " updated - Timeline refreshed",
+                        "info", null, "top_right", 3000);
+                }
+            }, new Event("updateTimeline"));
+        }
+    }
+});
+```
+
 ### Server Push Configuration
 
 **Requirement**: ZK Server Push must be enabled for each Desktop that receives updates.
@@ -422,11 +470,19 @@ System.out.println("=== DEBUG: [Packing Dialog] *** PUBLISHING EVENT ***");
 System.out.println("=== DEBUG: [Packing Dialog] Queue retrieved: " + queue);
 System.out.println("=== DEBUG: [Packing Dialog] *** EVENT PUBLISHED SUCCESSFULLY ***");
 
-// Subscriber logs  
+// KPI Dialog subscriber logs  
 System.out.println("=== DEBUG: [KPI Dialog] Subscribing to EventQueue");
 System.out.println("=== DEBUG: [KPI Dialog] *** EVENT RECEIVED *** Name: " + event.getName());
 System.out.println("=== DEBUG: [KPI Dialog] Scheduling refresh...");
 System.out.println("=== DEBUG: [KPI Dialog] Refresh completed!");
+
+// Timeline subscriber logs
+System.out.println("=== DEBUG: [Timeline] Subscribing to EventQueue");
+System.out.println("=== DEBUG: [Timeline] Server Push Enabled");
+System.out.println("=== DEBUG: [Timeline] *** EVENT RECEIVED *** Name: " + event.getName());
+System.out.println("=== DEBUG: [Timeline] Scheduling Timeline refresh...");
+System.out.println("=== DEBUG: [Timeline] Executing Timeline refresh");
+System.out.println("=== DEBUG: [Timeline] Timeline refresh completed!");
 ```
 
 **Common Debug Scenarios**:

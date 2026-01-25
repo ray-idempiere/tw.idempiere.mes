@@ -276,6 +276,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         // Inject Dependencies
         injectDependencies();
+
+        // Subscribe Timeline to real-time EventQueue updates
+        subscribeTimelineToEvents();
     }
 
     private void injectDependencies() {
@@ -952,6 +955,73 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         } catch (Exception e) {
             System.err.println("=== DEBUG: [KPI Dialog] EXCEPTION in subscription:");
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Subscribes Timeline view to real-time EventQueue updates.
+     * Listens for MES_UPDATE events and automatically refreshes the Timeline
+     * when production orders are scanned in any browser session.
+     */
+    private void subscribeTimelineToEvents() {
+        System.out.println("=== DEBUG: [Timeline] Subscribing to EventQueue");
+
+        try {
+            // Enable server push for Timeline desktop
+            final org.zkoss.zk.ui.Desktop timelineDesktop = org.zkoss.zk.ui.Executions.getCurrent().getDesktop();
+            timelineDesktop.enableServerPush(true);
+            System.out.println("=== DEBUG: [Timeline] Server Push Enabled");
+
+            // Subscribe to application-wide event queue
+            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
+                    EVENT_QUEUE_NAME,
+                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
+                    true);
+
+            queue.subscribe(new EventListener<Event>() {
+                public void onEvent(Event event) throws Exception {
+                    System.out.println("=== DEBUG: [Timeline] *** EVENT RECEIVED *** Name: " + event.getName());
+
+                    if (EVENT_NAME_UPDATE.equals(event.getName())) {
+                        final Object[] data = (Object[]) event.getData();
+                        System.out.println(
+                                "=== DEBUG: [Timeline] Event data: orderId=" + data[0] + ", productId=" + data[1]);
+
+                        if (timelineDesktop.isAlive()) {
+                            System.out.println("=== DEBUG: [Timeline] Scheduling Timeline refresh...");
+
+                            org.zkoss.zk.ui.Executions.schedule(timelineDesktop, new EventListener<Event>() {
+                                public void onEvent(Event evt) throws Exception {
+                                    System.out.println("=== DEBUG: [Timeline] Executing Timeline refresh");
+
+                                    // Refresh the Timeline to show updated order status
+                                    refreshTimeline();
+
+                                    // Show notification
+                                    int orderId = (Integer) data[0];
+                                    String docNo = DB.getSQLValueString(null,
+                                            "SELECT DocumentNo FROM PP_Order WHERE PP_Order_ID=?", orderId);
+
+                                    org.zkoss.zk.ui.util.Clients.showNotification(
+                                            "🔄 Order " + docNo + " updated - Timeline refreshed",
+                                            "info",
+                                            null,
+                                            NOTIFY_POS_TOP_RIGHT,
+                                            NOTIFY_DURATION_EXTRA);
+
+                                    System.out.println("=== DEBUG: [Timeline] Timeline refresh completed!");
+                                }
+                            }, new Event("updateTimeline"));
+                        }
+                    }
+                }
+            });
+
+            System.out.println("=== DEBUG: [Timeline] Subscription completed");
+
+        } catch (Exception e) {
+            System.err.println("=== DEBUG: [Timeline] EXCEPTION in subscription:");
             e.printStackTrace();
         }
     }
