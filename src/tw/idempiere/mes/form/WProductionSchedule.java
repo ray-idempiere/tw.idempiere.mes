@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.logging.Level;
 
 import org.adempiere.exceptions.AdempiereException;
-import org.adempiere.webui.window.FDialog;
 import org.adempiere.webui.apps.AEnv;
 import org.adempiere.webui.component.Button;
 import org.adempiere.webui.component.Grid;
@@ -26,50 +25,43 @@ import org.adempiere.webui.panel.ADForm;
 import org.adempiere.webui.panel.IFormController;
 import org.adempiere.webui.theme.ThemeManager;
 import org.adempiere.webui.util.ZKUpdateUtil;
+import org.adempiere.webui.window.FDialog;
+import org.compiere.model.MAttachment;
+import org.compiere.model.MAttachmentEntry;
 import org.compiere.model.MColumn;
 import org.compiere.model.MLookup;
 import org.compiere.model.MLookupFactory;
 import org.compiere.model.MOrderLine;
+import org.compiere.model.MProduct;
+import org.compiere.model.MQuery;
 import org.compiere.model.MResource;
+import org.compiere.model.MTable;
 import org.compiere.model.PO;
 import org.compiere.util.CLogger;
 import org.compiere.util.DB;
 import org.compiere.util.DisplayType;
 import org.compiere.util.Env;
 import org.compiere.util.Trx;
-import org.compiere.model.MTable;
-import org.compiere.model.MQuery;
 import org.zkoss.zk.ui.event.Event;
 import org.zkoss.zk.ui.event.EventListener;
 import org.zkoss.zk.ui.event.Events;
 import org.zkoss.zk.ui.util.Clients;
 import org.zkoss.zul.Borderlayout;
 import org.zkoss.zul.Center;
+import org.zkoss.zul.Checkbox;
+import org.zkoss.zul.Datebox;
 import org.zkoss.zul.Div;
 import org.zkoss.zul.Hbox;
 import org.zkoss.zul.Html;
+import org.zkoss.zul.Image;
+import org.zkoss.zul.Listbox;
 import org.zkoss.zul.North;
 import org.zkoss.zul.Script;
 import org.zkoss.zul.Separator;
-import org.zkoss.zul.Style;
 import org.zkoss.zul.Space;
 import org.zkoss.zul.Textbox;
-import org.zkoss.zul.Checkbox;
 import org.zkoss.zul.Timer;
-import org.zkoss.zul.Listbox;
-import org.zkoss.zul.Listhead;
-import org.zkoss.zul.Listheader;
-import org.zkoss.zul.Listitem;
-import org.zkoss.zul.Listcell;
 import org.zkoss.zul.Vbox;
-import org.zkoss.zul.Datebox;
-import org.zkoss.zul.Image;
-import org.zkoss.image.AImage;
-import org.compiere.model.MAttachment;
-import org.compiere.model.MAttachmentEntry;
-import org.compiere.model.MProduct;
-
-import com.google.gson.Gson;
 
 import tw.idempiere.mes.service.MESService;
 
@@ -80,6 +72,69 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
     private static final long serialVersionUID = 1L;
     private static CLogger log = CLogger.getCLogger(WProductionSchedule.class);
+
+    // ==================== UI Constants ====================
+
+    // Window Dimensions
+    private static final String WINDOW_WIDTH_FULL = "100%";
+    private static final String WINDOW_HEIGHT_FULL = "100%";
+    private static final String DIALOG_WIDTH_SCAN = "400px";
+    private static final String DIALOG_HEIGHT_SCAN = "350px";
+
+    // Font Sizes
+    private static final String FONT_SIZE_XLARGE = "84px"; // Rate display
+    private static final String FONT_SIZE_LARGE = "36px"; // Headers
+    private static final String FONT_SIZE_MEDIUM = "32px"; // Labels
+    private static final String FONT_SIZE_NORMAL = "24px"; // Regular text
+    private static final String FONT_SIZE_SMALL = "20px"; // Buttons
+    private static final String FONT_SIZE_INPUT = "18px"; // Input fields
+    private static final String FONT_SIZE_LABEL = "16px"; // Small labels
+    private static final String FONT_SIZE_INFO = "14px"; // Info text
+
+    // Colors
+    private static final String COLOR_SUCCESS = "#28a745";
+    private static final String COLOR_SUCCESS_BG = "#e6ffed";
+    private static final String COLOR_ERROR = "#e74c3c";
+    private static final String COLOR_ERROR_BG = "#FFEEEE";
+    private static final String COLOR_PRIMARY = "#007bff";
+    private static final String COLOR_INFO = "#2980b9";
+    private static final String COLOR_DARK = "#333";
+    private static final String COLOR_MEDIUM = "#34495e";
+    private static final String COLOR_LIGHT = "#7f8c8d";
+    private static final String COLOR_BG_LIGHT = "#f0f0f0";
+    private static final String COLOR_BG_NEUTRAL = "#f5f5f5";
+
+    // Sizes
+    private static final String SIZE_IMAGE = "250px";
+    private static final String SIZE_BUTTON_HEIGHT = "50px";
+    private static final String SIZE_BUTTON_HEIGHT_LARGE = "60px";
+    private static final String SIZE_BUTTON_WIDTH = "200px";
+    private static final String SIZE_BUTTON_WIDTH_FULL = "100%";
+    private static final String SIZE_INPUT_HEIGHT = "40px";
+
+    // Spacing
+    private static final String SPACING_PADDING = "20px";
+    private static final String SPACING_MARGIN = "10px";
+    private static final String SPACING_GAP = "20px";
+
+    // Event Queue Constants
+    private static final String EVENT_QUEUE_NAME = "MesUpdateQueue";
+    private static final String EVENT_NAME_UPDATE = "MES_UPDATE";
+
+    // Database Table IDs
+    private static final int TABLE_ID_PRODUCT = 208; // M_Product
+
+    // Notification Durations (milliseconds)
+    private static final int NOTIFY_DURATION_SHORT = 500;
+    private static final int NOTIFY_DURATION_NORMAL = 1000;
+    private static final int NOTIFY_DURATION_LONG = 2000;
+    private static final int NOTIFY_DURATION_EXTRA = 3000;
+
+    // Notification Positions
+    private static final String NOTIFY_POS_CENTER = "middle_center";
+    private static final String NOTIFY_POS_TOP_RIGHT = "top_right";
+
+    // ==================== Fields ====================
 
     private Button btnRefresh;
     private Button btnToday;
@@ -449,113 +504,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     }
 
     private void handleItemSelect(int orderId) {
-        String desc = DB.getSQLValueString(null, "SELECT Description FROM PP_Order WHERE PP_Order_ID=?", orderId);
-        if (desc != null && desc.contains("Packing")) {
-            showPackingDialog(orderId);
-        }
-    }
-
-    private void showPackingDialog(final int orderId) {
-        final org.zkoss.zul.Window win = new org.zkoss.zul.Window();
-        win.setTitle("Packing Station Scanner");
-        win.setWidth("400px");
-        win.setHeight("300px");
-        win.setBorder("normal");
-        win.setClosable(true);
-        win.setPage(this.getPage());
-
-        org.zkoss.zul.Vbox vbox = new org.zkoss.zul.Vbox();
-        vbox.setHflex("1");
-        vbox.setVflex("1");
-        vbox.setAlign("center");
-        vbox.setPack("center");
-        win.appendChild(vbox);
-
-        // Fetch Data
-        String sql = "SELECT p.Value, p.Name, o.QtyOrdered, o.QtyDelivered, o.DocumentNo " +
-                "FROM PP_Order o INNER JOIN M_Product p ON o.M_Product_ID=p.M_Product_ID " +
-                "WHERE o.PP_Order_ID=?";
-        java.sql.PreparedStatement pstmt = null;
-        java.sql.ResultSet rs = null;
-        String productValue = "";
-        String productName = "";
-        String docNo = "";
-        java.math.BigDecimal qtyOrdered = java.math.BigDecimal.ZERO;
-        final java.math.BigDecimal[] qtyDelivered = { java.math.BigDecimal.ZERO }; // Array for final modification
-
-        try {
-            pstmt = DB.prepareStatement(sql, null);
-            pstmt.setInt(1, orderId);
-            rs = pstmt.executeQuery();
-            if (rs.next()) {
-                productValue = rs.getString(1);
-                productName = rs.getString(2);
-                qtyOrdered = rs.getBigDecimal(3);
-                qtyDelivered[0] = rs.getBigDecimal(4);
-                docNo = rs.getString(5);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            DB.close(rs, pstmt);
-        }
-
-        // UI Components
-        vbox.appendChild(new org.zkoss.zul.Label("Order: " + docNo));
-        vbox.appendChild(new org.zkoss.zul.Separator());
-        vbox.appendChild(new org.zkoss.zul.Label(productName));
-        vbox.appendChild(new org.zkoss.zul.Label("Barcode: " + productValue));
-        vbox.appendChild(new org.zkoss.zul.Separator());
-
-        final org.zkoss.zul.Label lblQty = new org.zkoss.zul.Label();
-        final java.math.BigDecimal fQtyOrdered = qtyOrdered;
-        // Function to update label
-        Runnable updateLabel = new Runnable() {
-            public void run() {
-                lblQty.setValue(qtyDelivered[0].intValue() + " / " + fQtyOrdered.intValue());
-            }
-        };
-        updateLabel.run();
-        lblQty.setStyle("font-size: 24px; font-weight: bold;");
-        vbox.appendChild(lblQty);
-
-        vbox.appendChild(new org.zkoss.zul.Separator());
-        vbox.appendChild(new org.zkoss.zul.Label("Scan Barcode (Simulate):"));
-
-        final org.zkoss.zul.Textbox txtScan = new org.zkoss.zul.Textbox();
-        txtScan.setHflex("1");
-        txtScan.setPlaceholder("Enter Product Value");
-        // Focus logic
-        txtScan.setFocus(true);
-
-        final String fProductValue = productValue;
-        txtScan.addEventListener(Events.ON_OK, new EventListener<Event>() {
-            public void onEvent(Event event) throws Exception {
-                String input = txtScan.getValue().trim();
-                txtScan.setValue(""); // Clear immediately
-
-                if (input.equalsIgnoreCase(fProductValue)) {
-                    // Valid Scan
-                    // Update DB - Increment QtyDelivered
-                    int count = DB.executeUpdate(
-                            "UPDATE PP_Order SET QtyDelivered = COALESCE(QtyDelivered,0) + 1 WHERE PP_Order_ID=?",
-                            orderId, null);
-                    if (count > 0) {
-                        qtyDelivered[0] = qtyDelivered[0].add(java.math.BigDecimal.ONE);
-                        updateLabel.run();
-                        Clients.showNotification("Scanned!", "info", null, "middle_center", 500);
-                        refreshTimeline(); // Reflect on main screen
-                    }
-                } else {
-                    Clients.showNotification("Wrong Barcode!", "error", null, "middle_center", 1000);
-                    // Play sound?
-                }
-                txtScan.setFocus(true);
-            }
-        });
-        vbox.appendChild(txtScan);
-
-        win.doModal();
+        // User requested removal of "Packing" click logic
     }
 
     private void updateOrderStage(int orderId, String stage) {
@@ -645,7 +594,8 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         options.append(" 'hiddenDates': [");
         options.append("   { 'start': '2026-01-01 18:00:00', 'end': '2026-01-02 08:00:00', 'repeat': 'daily' },");
-        options.append("   { 'start': '2026-01-25 00:00:00', 'end': '2026-01-26 00:00:00', 'repeat': 'weekly' }");
+        // options.append(" { 'start': '2026-01-25 00:00:00', 'end': '2026-01-26
+        // 00:00:00', 'repeat': 'weekly' }");
         options.append(" ]");
         options.append("}");
 
@@ -669,53 +619,55 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         Clients.evalJavaScript(jsCall);
     }
 
+    /**
+     * Shows the KPI (Key Performance Indicator) dialog for a specific resource.
+     * Displays daily production statistics including target qty, delivered qty, and
+     * completion rate.
+     * Supports real-time cross-browser updates via EventQueue.
+     * 
+     * @param resourceId ID of the resource (S_Resource_ID) to display KPI for
+     */
     private void showResourceDialog(final int resourceId) {
         String resName = DB.getSQLValueString(null, "SELECT Name FROM S_Resource WHERE S_Resource_ID=?", resourceId);
 
-        final org.zkoss.zul.Window win = new org.zkoss.zul.Window();
-        win.setTitle("Daily KPI: " + resName);
-        win.setWidth("100%");
-        win.setHeight("100%");
-        win.setBorder("normal");
-        win.setClosable(true);
-        win.setPage(this.getPage());
+        final org.zkoss.zul.Window kpiWindow = new org.zkoss.zul.Window();
+        kpiWindow.setTitle("Daily KPI: " + resName);
+        kpiWindow.setWidth(WINDOW_WIDTH_FULL);
+        kpiWindow.setHeight(WINDOW_HEIGHT_FULL);
+        kpiWindow.setBorder("normal");
+        kpiWindow.setClosable(true);
+        kpiWindow.setPage(this.getPage());
 
-        org.zkoss.zul.Vbox vbox = new org.zkoss.zul.Vbox();
-        vbox.setHflex("1");
-        vbox.setVflex("1");
-        vbox.setStyle("padding: 20px;");
-        win.appendChild(vbox);
+        org.zkoss.zul.Vbox mainContainer = new org.zkoss.zul.Vbox();
+        mainContainer.setHflex("1");
+        mainContainer.setVflex("1");
+        mainContainer.setStyle("padding: " + SPACING_PADDING + ";");
+        kpiWindow.appendChild(mainContainer);
 
-        // Header Info
-        org.zkoss.zul.Hbox header = new org.zkoss.zul.Hbox();
-        header.setAlign("center");
-        header.setPack("center");
-        header.setWidth("100%");
-        vbox.appendChild(header);
-
-        org.zkoss.zul.Label lblTitle = new org.zkoss.zul.Label("Daily Targets for: ");
-        lblTitle.setStyle("font-size: 24px; font-weight: bold;");
-        header.appendChild(lblTitle);
-
-        // Date Selector
+        // Header with Date Selector
         final org.zkoss.zul.Datebox dateBox = new org.zkoss.zul.Datebox();
-        dateBox.setValue(new java.util.Date());
-        dateBox.setFormat("yyyy-MM-dd");
-        dateBox.setStyle("font-size: 18px; margin-left: 10px;");
-        header.appendChild(dateBox);
+        org.zkoss.zul.Hbox header = createKPIDialogHeader(resName, dateBox);
+        mainContainer.appendChild(header);
 
-        vbox.appendChild(new org.zkoss.zul.Separator());
+        mainContainer.appendChild(new org.zkoss.zul.Separator());
 
-        // Container for Box Flow
-        final org.zkoss.zul.Div cardContainer = new org.zkoss.zul.Div();
-        cardContainer.setStyle("display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; padding: 10px;");
-        cardContainer.setWidth("100%");
-        vbox.appendChild(cardContainer);
+        // Container for Order Cards
+        final org.zkoss.zul.Div orderCardsContainer = new org.zkoss.zul.Div();
+        orderCardsContainer.setStyle(
+                "display: flex; flex-wrap: wrap; gap: " + SPACING_GAP + "; justify-content: center; padding: "
+                        + SPACING_MARGIN + "; overflow: auto; flex: 1;");
+        orderCardsContainer.setWidth(WINDOW_WIDTH_FULL);
+        mainContainer.appendChild(orderCardsContainer);
 
-        // Function to refresh list
-        final Runnable refreshList = new Runnable() {
+        // Bottom Bar with Close Button
+        org.zkoss.zul.Hbox bottomBar = createKPIDialogBottomBar(kpiWindow);
+        mainContainer.appendChild(bottomBar);
+
+        // Refresh callback to reload KPI data
+        final Runnable[] refreshListWrapper = new Runnable[1];
+        refreshListWrapper[0] = new Runnable() {
             public void run() {
-                cardContainer.getChildren().clear();
+                orderCardsContainer.getChildren().clear();
                 java.util.Date selDate = dateBox.getValue();
                 Timestamp ts = (selDate != null) ? new Timestamp(selDate.getTime()) : null;
 
@@ -726,9 +678,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                 if (tasks.size() == 1) {
                     containerStyle += " justify-content: center; align-items: center;";
                 }
-                cardContainer.setStyle(containerStyle);
+                orderCardsContainer.setStyle(containerStyle);
 
-                for (MESService.TimelineItem task : tasks) {
+                for (final MESService.TimelineItem task : tasks) { // Made final for anonymous inner class
                     // Card Box - Full Width, Flex Grow
                     org.zkoss.zul.Div card = new org.zkoss.zul.Div();
                     String borderStyle = ("Completed".equals(task.className)
@@ -737,7 +689,11 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                     : "border: 2px solid #ccc; background: #fff;";
 
                     card.setStyle(borderStyle
-                            + "border-radius: 12px; padding: 25px; flex: 1; margin-bottom: 20px; box-shadow: 4px 4px 10px rgba(0,0,0,0.2); display: flex; align-items: center; width: 100%; box-sizing: border-box; max-height: 48%; min-height: 300px;");
+                            + "border-radius: 12px; padding: 25px; flex: 1; margin-bottom: 20px; box-shadow: 4px 4px 10px rgba(0,0,0,0.2); display: flex; align-items: center; width: 100%; box-sizing: border-box; max-height: 48%; min-height: 350px;"); // Increased
+                                                                                                                                                                                                                                                           // min-height
+                                                                                                                                                                                                                                                           // for
+                                                                                                                                                                                                                                                           // extra
+                                                                                                                                                                                                                                                           // button
 
                     // 1. Column Left: Image (33%)
                     org.zkoss.zul.Div colLeft = new org.zkoss.zul.Div();
@@ -798,10 +754,14 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                     lblProdVal.setStyle("display: block; font-size: 28px; color: #7f8c8d; margin-top: 5px;");
                     colMid.appendChild(lblProdVal);
 
-                    // 3. Column Right: Stats & Rate (33%)
+                    // 3. Column Right: Stats & Rate (34%) + Scan Button
                     org.zkoss.zul.Vbox colRight = new org.zkoss.zul.Vbox();
                     colRight.setStyle(
-                            "width: 34%; height: 100%; padding: 0 20px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end;");
+                            "width: 34%; height: 100%; padding: 0 20px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end;"); // Align
+                                                                                                                                                                  // items
+                                                                                                                                                                  // to
+                                                                                                                                                                  // flex-end
+                                                                                                                                                                  // (right)
                     card.appendChild(colRight);
 
                     java.math.BigDecimal target = task.qtyOrdered != null ? task.qtyOrdered : java.math.BigDecimal.ZERO;
@@ -828,22 +788,360 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                             + (rate >= 100 ? "#27ae60" : "#e74c3c") + ";");
                     colRight.appendChild(lblRate);
 
-                    cardContainer.appendChild(card);
+                    // Add Scan Button inside Card
+                    org.zkoss.zul.Button btnScanOrder = new org.zkoss.zul.Button("Scan Barcode");
+                    btnScanOrder.setStyle(
+                            "font-size: 20px; font-weight: bold; height: 50px; width: 100%; max-width: 250px; margin-top: 25px; background: #007bff; color: white;");
+                    btnScanOrder.addEventListener(org.zkoss.zk.ui.event.Events.ON_CLICK,
+                            new org.zkoss.zk.ui.event.EventListener<org.zkoss.zk.ui.event.Event>() {
+                                public void onEvent(org.zkoss.zk.ui.event.Event event) throws Exception {
+                                    showPackingDialog(task.productId, task.documentNo, refreshListWrapper[0]);
+                                }
+                            });
+                    colRight.appendChild(btnScanOrder);
+
+                    orderCardsContainer.appendChild(card);
                 }
             }
         };
 
         // Initial Load
-        refreshList.run();
+        refreshListWrapper[0].run();
 
         // Listen for changes
         dateBox.addEventListener(Events.ON_CHANGE, new EventListener<Event>() {
             public void onEvent(Event event) throws Exception {
-                refreshList.run();
+                refreshListWrapper[0].run();
             }
         });
 
-        win.doModal();
+        // Enable Server Push for Real-time Updates
+        try {
+            org.zkoss.zk.ui.Executions.getCurrent().getDesktop().enableServerPush(true);
+            System.out.println("=== DEBUG: [KPI Dialog] Server Push Enabled for resource: " + resName);
+        } catch (Exception ex) {
+            System.err.println("=== DEBUG: [KPI Dialog] Server Push Enable Failed: " + ex.getMessage());
+        }
+
+        // Subscribe to Real-time Events
+        final org.zkoss.zk.ui.Desktop kpiDesktop = org.zkoss.zk.ui.Executions.getCurrent().getDesktop();
+        subscribeKPIDialogToEvents(kpiDesktop, refreshListWrapper[0], resName);
+
+        kpiWindow.doModal();
+    }
+
+    // ==================== KPI Dialog Helper Methods ====================
+
+    /**
+     * Creates and configures the header section for KPI dialog.
+     * 
+     * @param resourceName Name of the resource to display in header
+     * @param dateBox      Datebox component for date selection (will be configured
+     *                     and added to header)
+     * @return Configured Hbox containing resource label and date selector
+     */
+    private org.zkoss.zul.Hbox createKPIDialogHeader(String resourceName, org.zkoss.zul.Datebox dateBox) {
+        org.zkoss.zul.Hbox header = new org.zkoss.zul.Hbox();
+        header.setAlign("center");
+        header.setPack("center");
+        header.setWidth(WINDOW_WIDTH_FULL);
+
+        // Resource Name Label
+        org.zkoss.zul.Label lblResource = new org.zkoss.zul.Label("Daily KPI: " + resourceName);
+        lblResource.setStyle("font-size: " + FONT_SIZE_LARGE + "; font-weight: bold; color: " + COLOR_DARK + ";");
+        header.appendChild(lblResource);
+
+        // Date Selector
+        dateBox.setValue(new java.util.Date());
+        dateBox.setFormat("yyyy-MM-dd");
+        dateBox.setStyle("font-size: " + FONT_SIZE_NORMAL + "; height: 36px; margin-left: " + SPACING_MARGIN + ";");
+        header.appendChild(dateBox);
+
+        return header;
+    }
+
+    /**
+     * Creates and configures the bottom bar with close button for KPI dialog.
+     * 
+     * @param win The window that will be closed when button is clicked
+     * @return Configured Hbox containing centered close button
+     */
+    private org.zkoss.zul.Hbox createKPIDialogBottomBar(final org.zkoss.zul.Window win) {
+        org.zkoss.zul.Hbox bottomBar = new org.zkoss.zul.Hbox();
+        bottomBar.setStyle("padding: " + SPACING_MARGIN + "; background-color: " + COLOR_BG_NEUTRAL
+                + "; border-top: 1px solid #ddd;");
+        bottomBar.setAlign("center");
+        bottomBar.setPack("center");
+        bottomBar.setHeight("80px");
+        bottomBar.setWidth(WINDOW_WIDTH_FULL);
+
+        org.zkoss.zul.Button btnClose = new org.zkoss.zul.Button("Close");
+        btnClose.setStyle("font-size: " + FONT_SIZE_NORMAL + "; font-weight: bold; height: " + SIZE_BUTTON_HEIGHT_LARGE
+                + "; width: " + SIZE_BUTTON_WIDTH + ";");
+        btnClose.addEventListener(org.zkoss.zk.ui.event.Events.ON_CLICK,
+                new org.zkoss.zk.ui.event.EventListener<org.zkoss.zk.ui.event.Event>() {
+                    public void onEvent(org.zkoss.zk.ui.event.Event event) throws Exception {
+                        win.detach();
+                    }
+                });
+        bottomBar.appendChild(btnClose);
+
+        return bottomBar;
+    }
+
+    /**
+     * Subscribes KPI dialog to real-time EventQueue updates.
+     * Listens for MES_UPDATE events and automatically refreshes the KPI display
+     * when production orders are scanned in other browser sessions.
+     * 
+     * @param kpiDesktop      Desktop instance for this KPI dialog
+     * @param refreshCallback Runnable to execute when refresh is needed
+     * @param resourceName    Name of resource (for logging purposes)
+     */
+    private void subscribeKPIDialogToEvents(final org.zkoss.zk.ui.Desktop kpiDesktop, final Runnable refreshCallback,
+            final String resourceName) {
+        System.out.println("=== DEBUG: [KPI Dialog] Subscribing to EventQueue for resource: " + resourceName);
+
+        try {
+            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
+                    EVENT_QUEUE_NAME,
+                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
+                    true);
+
+            queue.subscribe(new EventListener<Event>() {
+                public void onEvent(Event event) throws Exception {
+                    System.out.println("=== DEBUG: [KPI Dialog] *** EVENT RECEIVED *** Name: " + event.getName());
+
+                    if (EVENT_NAME_UPDATE.equals(event.getName())) {
+                        final Object[] data = (Object[]) event.getData();
+                        System.out.println(
+                                "=== DEBUG: [KPI Dialog] Event data: orderId=" + data[0] + ", productId=" + data[1]);
+
+                        if (kpiDesktop.isAlive()) {
+                            System.out.println("=== DEBUG: [KPI Dialog] Scheduling refresh...");
+
+                            org.zkoss.zk.ui.Executions.schedule(kpiDesktop, new EventListener<Event>() {
+                                public void onEvent(Event evt) throws Exception {
+                                    System.out.println("=== DEBUG: [KPI Dialog] Executing refresh on Desktop: "
+                                            + kpiDesktop.getId());
+
+                                    // Refresh the entire KPI display
+                                    refreshCallback.run();
+
+                                    // Show visual notification
+                                    int orderId = (Integer) data[0];
+                                    String docNo = DB.getSQLValueString(null,
+                                            "SELECT DocumentNo FROM PP_Order WHERE PP_Order_ID=?", orderId);
+
+                                    org.zkoss.zk.ui.util.Clients.showNotification(
+                                            "🔴 Remote Scan! Order " + docNo + " updated",
+                                            "info",
+                                            null,
+                                            NOTIFY_POS_TOP_RIGHT,
+                                            NOTIFY_DURATION_EXTRA);
+
+                                    System.out.println("=== DEBUG: [KPI Dialog] Refresh completed!");
+                                }
+                            }, new Event("updateKPI"));
+                        }
+                    }
+                }
+            });
+
+            System.out.println("=== DEBUG: [KPI Dialog] Subscription completed");
+
+        } catch (Exception e) {
+            System.err.println("=== DEBUG: [KPI Dialog] EXCEPTION in subscription:");
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Shows the barcode scanning dialog for product delivery.
+     * Allows operators to scan product barcodes and update delivery quantities.
+     * Publishes real-time events to notify other browser sessions of updates.
+     * 
+     * @param productId       Expected product ID for validation
+     * @param orderNo         Production order document number
+     * @param onCloseCallback Callback to refresh parent UI after successful scan
+     */
+    private void showPackingDialog(final int productId, final String orderNo, final Runnable onCloseCallback) {
+        final org.zkoss.zul.Window dialog = new org.zkoss.zul.Window();
+        dialog.setTitle("Delivery Scan: " + orderNo);
+        dialog.setWidth(DIALOG_WIDTH_SCAN);
+        dialog.setHeight(DIALOG_HEIGHT_SCAN);
+        dialog.setBorder("normal");
+        dialog.setClosable(true);
+        dialog.setPage(this.getPage());
+        dialog.setSclass("popup-dialog");
+
+        org.zkoss.zul.Vbox layout = new org.zkoss.zul.Vbox();
+        layout.setHflex("1");
+        layout.setVflex("1");
+        layout.setStyle("padding: 20px; align-items: center;");
+        dialog.appendChild(layout);
+
+        // Instructions
+        org.zkoss.zul.Label lblInstr = new org.zkoss.zul.Label("Scan Product Barcode or Enter Qty");
+        lblInstr.setStyle("font-weight: bold; font-size: 16px; margin-bottom: 20px;");
+        layout.appendChild(lblInstr);
+
+        // Product Value Display
+        String productValue = DB.getSQLValueString(null, "SELECT Value FROM M_Product WHERE M_Product_ID=?", productId);
+        org.zkoss.zul.Hbox prodBox = new org.zkoss.zul.Hbox();
+        prodBox.setAlign("center");
+        prodBox.setWidth("100%");
+        prodBox.setStyle("margin-bottom: 10px; background: #e9ecef; padding: 5px; border-radius: 4px;");
+
+        org.zkoss.zul.Label lblProd = new org.zkoss.zul.Label("Product:");
+        lblProd.setStyle("font-weight: bold; font-size: 14px; margin-right: 10px;");
+        prodBox.appendChild(lblProd);
+
+        org.zkoss.zul.Label lblProdValue = new org.zkoss.zul.Label(productValue);
+        lblProdValue.setStyle("font-size: 16px; font-weight: bold; color: #0056b3;");
+        prodBox.appendChild(lblProdValue);
+
+        layout.appendChild(prodBox);
+
+        // Barcode Input
+        final org.zkoss.zul.Textbox txtBarcode = new org.zkoss.zul.Textbox();
+        txtBarcode.setPlaceholder("Scan Barcode Here");
+        txtBarcode.setStyle("height: 40px; font-size: 18px; width: 100%; margin-bottom: 15px;");
+        txtBarcode.setFocus(true); // Focus for scanning
+        layout.appendChild(txtBarcode);
+
+        // Qty Input
+        org.zkoss.zul.Hbox qtyBox = new org.zkoss.zul.Hbox();
+        qtyBox.setAlign("center");
+        qtyBox.setWidth("100%");
+
+        org.zkoss.zul.Label lblQty = new org.zkoss.zul.Label("Delivered Qty:");
+        lblQty.setStyle("font-size: 16px; margin-right: 10px;");
+        qtyBox.appendChild(lblQty);
+
+        final org.zkoss.zul.Intbox numQty = new org.zkoss.zul.Intbox(1); // Default 1
+        numQty.setStyle("height: 40px; font-size: 18px; width: 100px;");
+        qtyBox.appendChild(numQty);
+        layout.appendChild(qtyBox);
+
+        // Process Button
+        final org.zkoss.zul.Button btnProcess = new org.zkoss.zul.Button("Confirm Delivery");
+        btnProcess.setStyle(
+                "margin-top: 20px; height: 50px; width: 100%; font-size: 18px; font-weight: bold; background: #28a745; color: white;");
+        btnProcess.addEventListener(org.zkoss.zk.ui.event.Events.ON_CLICK,
+                new org.zkoss.zk.ui.event.EventListener<org.zkoss.zk.ui.event.Event>() {
+                    public void onEvent(org.zkoss.zk.ui.event.Event event) throws Exception {
+                        String barcode = txtBarcode.getValue();
+                        Integer qty = numQty.getValue();
+
+                        if (qty == null || qty <= 0) {
+                            org.zkoss.zk.ui.util.Clients.showNotification("Invalid Qty", "warning", null,
+                                    NOTIFY_POS_CENTER, NOTIFY_DURATION_NORMAL);
+                            return;
+                        }
+
+                        // 1. Validate Barcode
+                        int scannedId = getProductIdFromBarcode(barcode);
+                        if (scannedId <= 0) {
+                            org.zkoss.zk.ui.util.Clients.showNotification("Product Not Found!", "error", null,
+                                    NOTIFY_POS_CENTER, NOTIFY_DURATION_NORMAL);
+                            txtBarcode.setFocus(true);
+                            txtBarcode.setSelectionRange(0, barcode.length());
+                            return;
+                        }
+
+                        if (scannedId != productId) {
+                            org.zkoss.zk.ui.util.Clients.showNotification("Wrong Barcode!", "error", null,
+                                    NOTIFY_POS_CENTER, NOTIFY_DURATION_NORMAL);
+                            txtBarcode.setFocus(true);
+                            txtBarcode.setSelectionRange(0, barcode.length());
+                            return;
+                        }
+
+                        // 2. Actual Processing
+                        boolean success = updateProductionOrderQty(orderNo, productId, qty);
+
+                        if (success) {
+                            org.zkoss.zk.ui.util.Clients.showNotification("Scanned!", "info", null, NOTIFY_POS_CENTER,
+                                    NOTIFY_DURATION_SHORT);
+
+                            // Get the Order ID for event publishing
+                            int orderId = DB.getSQLValue(null,
+                                    "SELECT PP_Order_ID FROM PP_Order WHERE DocumentNo=? AND M_Product_ID=?",
+                                    orderNo, productId);
+
+                            // Publish Event to notify all open dialogs
+                            System.out.println("=== DEBUG: [Packing Dialog] *** PUBLISHING EVENT *** OrderID: "
+                                    + orderId + ", ProductID: " + productId);
+
+                            try {
+                                org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues
+                                        .lookup(EVENT_QUEUE_NAME, org.zkoss.zk.ui.event.EventQueues.APPLICATION, true);
+
+                                System.out.println("=== DEBUG: [Packing Dialog] Queue retrieved: " + queue);
+
+                                Event mesEvent = new Event(EVENT_NAME_UPDATE, null,
+                                        new Object[] { orderId, productId, qty });
+                                queue.publish(mesEvent);
+
+                                System.out.println("=== DEBUG: [Packing Dialog] *** EVENT PUBLISHED SUCCESSFULLY ***");
+
+                            } catch (Exception pubEx) {
+                                System.err.println("=== DEBUG: [Packing Dialog] EXCEPTION during publish:");
+                                pubEx.printStackTrace();
+                            }
+
+                            // Clear and Refocus
+                            txtBarcode.setValue("");
+                            txtBarcode.setFocus(true);
+
+                            if (onCloseCallback != null) {
+                                onCloseCallback.run(); // Call the callback to refresh UI background
+                            }
+                        } else {
+                            org.zkoss.zk.ui.util.Clients.showNotification("DB Error", "error", null, NOTIFY_POS_CENTER,
+                                    NOTIFY_DURATION_LONG);
+                        }
+                    }
+                });
+        layout.appendChild(btnProcess);
+
+        // Handle Enter key on Barcode field to jump to Process or Auto-submit
+        txtBarcode.addEventListener(org.zkoss.zk.ui.event.Events.ON_OK,
+                new org.zkoss.zk.ui.event.EventListener<org.zkoss.zk.ui.event.Event>() {
+                    public void onEvent(org.zkoss.zk.ui.event.Event event) throws Exception {
+                        org.zkoss.zk.ui.event.Events.postEvent(org.zkoss.zk.ui.event.Events.ON_CLICK, btnProcess, null);
+                    }
+                });
+
+        dialog.doModal();
+    }
+
+    /**
+     * Updates the delivered quantity for a production order.
+     * 
+     * @param documentNo Production order document number
+     * @param productId  Product ID for validation
+     * @param qtyToAdd   Quantity to add to current delivered amount
+     * @return true if update was successful, false otherwise
+     */
+    private boolean updateProductionOrderQty(String documentNo, int productId, int qtyToAdd) {
+        String sql = "UPDATE PP_Order SET QtyDelivered = QtyDelivered + ? WHERE DocumentNo = ? AND M_Product_ID = ?";
+        int no = DB.executeUpdate(sql, new Object[] { qtyToAdd, documentNo, productId }, false, null);
+        return no > 0;
+    }
+
+    /**
+     * Looks up Product ID from barcode (M_Product.Value).
+     * 
+     * @param barcode Barcode string to search for
+     * @return Product ID if found, -1 if not found
+     */
+    private int getProductIdFromBarcode(String barcode) {
+        if (barcode == null || barcode.trim().isEmpty())
+            return -1;
+        String sql = "SELECT M_Product_ID FROM M_Product WHERE Value = ? AND IsActive='Y' AND AD_Client_ID = ?";
+        return DB.getSQLValue(null, sql, barcode.trim(), Env.getAD_Client_ID(Env.getCtx()));
     }
 
     private void updateOrder(int id, int resourceId, String startStr, String endStr) {

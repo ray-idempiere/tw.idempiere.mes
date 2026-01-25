@@ -5,6 +5,8 @@ Bundle-SymbolicName: tw.idempiere.mes
 Bundle-Version: 1.0.0.qualifier
 Bundle-Vendor: Ray Lee
 Automatic-Module-Name: tw.idempiere.mes
+Bundle-ClassPath: src/,
+ .
 Require-Bundle: org.adempiere.ui.zk,
  org.adempiere.base,
  zweb,

@@ -1,0 +1,32 @@
+    private void showContextMenu(final int orderId, int x, int y) {
+        org.zkoss.zul.Menupopup popup = new org.zkoss.zul.Menupopup();
+        popup.setPage(this.getPage());
+        
+        org.zkoss.zul.Menuitem itemOpen = new org.zkoss.zul.Menuitem("Open Order Window");
+        itemOpen.setImage(ThemeManager.getThemeResource("images/Window16.png"));
+        itemOpen.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+            public void onEvent(Event event) throws Exception {
+                // Open WProduction Window (PP_Order)
+                // Assuming standard AD window opening logic
+                int AD_Window_ID = DB.getSQLValue(null, "SELECT AD_Window_ID FROM AD_Window WHERE Name='Manufacturing Order' AND IsActive='Y'");
+                if (AD_Window_ID > 0) {
+                    AEnv.zoom(AD_Window_ID, orderId);
+                } else {
+                    FDialog.warn(0, "Window Not Found", "Could not find Manufacturing Order window");
+                }
+            }
+        });
+        popup.appendChild(itemOpen);
+        
+        org.zkoss.zul.Menuitem itemRefresh = new org.zkoss.zul.Menuitem("Refresh Board");
+        itemRefresh.setImage(ThemeManager.getThemeResource("images/Refresh16.png"));
+        itemRefresh.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+            public void onEvent(Event event) throws Exception {
+                refreshTimeline();
+            }
+        });
+        popup.appendChild(itemRefresh);
+        
+        this.appendChild(popup);
+        popup.open(x, y);
+    }
