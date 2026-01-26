@@ -93,13 +93,18 @@ public class MESService {
     /**
      * Get Resources as JSON for Vis.js
      */
-    public String getGroupsJSON(int AD_Client_ID) {
+    public String getGroupsJSON(int AD_Client_ID, String resourceFilter) {
         List<TimelineGroup> groups = new ArrayList<>();
         String sql = "SELECT S_Resource_ID, Name, Value FROM S_Resource WHERE IsActive='Y' AND IsManufacturingResource='Y' AND AD_Client_ID=?";
         // Fallback safety: Check if column exists
         String sqlCheck = "SELECT count(*) FROM AD_Column c INNER JOIN AD_Table t ON (c.AD_Table_ID=t.AD_Table_ID) WHERE t.TableName='S_Resource' AND c.ColumnName='IsManufacturingResource'";
         if (DB.getSQLValue(null, sqlCheck) <= 0) {
             sql = "SELECT S_Resource_ID, Name, Value FROM S_Resource WHERE IsActive='Y' AND AD_Client_ID=?";
+        }
+
+        // Apply Filter
+        if (resourceFilter != null && !resourceFilter.isEmpty() && !"All".equals(resourceFilter)) {
+            sql += " AND (Name LIKE ? OR Value LIKE ?)";
         }
 
         PreparedStatement pstmt = null;
@@ -109,6 +114,13 @@ public class MESService {
         try {
             pstmt = DB.prepareStatement(sql, null);
             pstmt.setInt(1, AD_Client_ID);
+
+            if (resourceFilter != null && !resourceFilter.isEmpty() && !"All".equals(resourceFilter)) {
+                String filterPattern = "%" + resourceFilter + "%";
+                pstmt.setString(2, filterPattern);
+                pstmt.setString(3, filterPattern);
+            }
+
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 groups.add(new TimelineGroup(rs.getInt("S_Resource_ID"), rs.getString("Name")));
@@ -174,6 +186,10 @@ public class MESService {
      * Get Orders as JSON for Vis.js
      */
     public String getItemsJSON() {
+        return getItemsJSON(null);
+    }
+
+    public String getItemsJSON(String searchText) {
         List<TimelineItem> items = new ArrayList<>();
 
         Calendar cal = Calendar.getInstance();
@@ -191,12 +207,25 @@ public class MESService {
                 "WHERE o.IsActive='Y' " +
                 "AND o.MovementDate >= ? AND o.MovementDate <= ?";
 
+        if (searchText != null && !searchText.trim().isEmpty()) {
+            sql += " AND (o.DocumentNo ILIKE ? OR p.Name ILIKE ? OR p.Value ILIKE ?)";
+        }
+
         PreparedStatement pstmt = null;
         ResultSet rs = null;
         try {
             pstmt = DB.prepareStatement(sql, null);
-            pstmt.setTimestamp(1, dateFrom);
-            pstmt.setTimestamp(2, dateTo);
+            int idx = 1;
+            pstmt.setTimestamp(idx++, dateFrom);
+            pstmt.setTimestamp(idx++, dateTo);
+
+            if (searchText != null && !searchText.trim().isEmpty()) {
+                String pattern = "%" + searchText.trim() + "%";
+                pstmt.setString(idx++, pattern);
+                pstmt.setString(idx++, pattern);
+                pstmt.setString(idx++, pattern);
+            }
+
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 int id = rs.getInt("M_Production_ID");
@@ -243,24 +272,46 @@ public class MESService {
                 tw.idempiere.mes.model.StageConfig stageConfig = tw.idempiere.mes.model.StageConfig.fromName(stageName);
                 String icon = stageConfig.getIcon() + " ";
 
-                String content = icon + prodValue + " (" + qtyDelivered.intValue() + "/" + qty.intValue() + ")";
+                // Risk Color Logic
+                String className = "status-scheduled"; // Default Blue
+                Timestamp now = new Timestamp(System.currentTimeMillis());
+
+                boolean isCompleted = "CO".equals(docStatus) || "CL".equals(docStatus);
+                boolean isLate = !isCompleted && movementDate.before(now);
+                boolean isAtRisk = "IP".equals(docStatus) && qtyDelivered.compareTo(qty) < 0;
+                boolean isFullyDelivered = qtyDelivered.compareTo(qty) >= 0;
+
+                if (isCompleted || isFullyDelivered) {
+                    className = "status-completed"; // Green
+                } else if (isLate) {
+                    className = "status-late"; // Red
+                } else if (isAtRisk) {
+                    className = "status-risk"; // Yellow
+                } else if ("IP".equals(docStatus)) {
+                    className = "status-inprogress"; // Standard In Progress
+                }
+
+                // Progress Bar HTML
+                double pct = 0;
+                if (qty.compareTo(BigDecimal.ZERO) > 0) {
+                    pct = qtyDelivered.divide(qty, 2, java.math.RoundingMode.HALF_UP).doubleValue() * 100.0;
+                }
+                if (pct > 100)
+                    pct = 100;
+
+                String progressBarHtml = "<div style='width:100%; height:4px; background:#e0e0e0; margin-top:3px; border-radius:2px; overflow:hidden;'>"
+                        + "<div style='width:" + (int) pct + "%; height:100%; background-color:"
+                        + (className.equals("status-completed") ? "#4caf50" : "#2196f3") + ";'></div>"
+                        + "</div>";
+
+                String content = "<div style='line-height:1.2;'>" + icon + prodValue + " (" + qtyDelivered.intValue()
+                        + "/" + qty.intValue() + ")</div>" + progressBarHtml;
 
                 StringBuilder title = new StringBuilder();
                 title.append("Order: ").append(docNo).append("\n");
                 title.append("Product: ").append(prodName).append("\n");
                 title.append("Qty: ").append(qty).append("\n");
                 title.append("Status: ").append(docStatus);
-
-                String className = "status-draft";
-                if ("CO".equals(docStatus) || "CL".equals(docStatus)) {
-                    className = "status-completed";
-                } else if ("IP".equals(docStatus)) {
-                    className = "status-inprogress";
-                } else if ("DR".equals(docStatus) || "NA".equals(docStatus)) {
-                    className = "status-draft";
-                } else {
-                    className = "status-error";
-                }
 
                 if (start != null && end != null) {
                     items.add(new TimelineItem(id, resId, content, start, end, title.toString(), className, docNo,

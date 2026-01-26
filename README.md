@@ -4,6 +4,7 @@
 
 | Version | Date | Summary |
 |---------|------|---------|
+| **2.2.0** | 2026-01-27 | **High-Performance Real-Time Synchronization**<br>• **OSGi EventAdmin Integration**: Replaced legacy ZK EventQueues with native OSGi EventAdmin for sub-second cross-session updates<br>• **Enhanced KPIs**: Fixed Stage parsing logic to support complex description formats<br>• **Unified Broadcasts**: Single event pipeline for Packing, Rescheduling, and Stage Changes<br>• **Robust Notifications**: Immediate visual feedback for all remote actions |
 | **2.0.0** | 2026-01-26 | **M_Production Migration & Core Enhancements**<br>• **Migration to M_Production**: Replaced legacy `PP_Order` with standard `M_Production` table for iDempiere 12 compatibility<br>• **Delivered Quantity Tracking**: Added `QtyDelivered` to `M_Production` for accurate output tracking<br>• **Smart Scheduling**: Implemented Sunday exclusion and dynamic locator selection (Resource Name/Value/Org)<br>• **Resilient Order Generation**: Enabled order creation even with stock shortages (`createLines(false)`)<br>• **Model Validator**: Added automatic stage updates (Material Issue -> Cutting) on Movement completion |
 | **1.3.0** | 2026-01-25 | **Notice System & Alerting**<br>• Added "Notice" feature to Context Menu for assigning alerts to Orders<br>• Implemented real-time KPI Dialog updates with **Flashing Red Alert** effect for 10s<br>• Optimized Notice visibility with large 48px Bold font and text wrapping<br>• Enhanced timeline synchronization for notice updates |
 | **1.2.0** | 2026-01-25 | **Production Stage Icons & Timeline Synchronization**<br>• Added centralized `StageConfig` enum for unified stage management<br>• Implemented stage icon display in Timeline and KPI Dialog (✂️ Cutting, 🧵 Sewing, 📦 Packing, 🧱 Material Issue)<br>• Added EventQueue publishing for Timeline drag-and-drop operations<br>• Added EventQueue publishing for context menu stage changes<br>• Complete cross-browser synchronization across all update scenarios |
@@ -292,150 +293,74 @@ sequenceDiagram
 - UI events → Debug level logging
 - Performance metrics → Optional profiling mode
 
-## Real-time Cross-Browser Synchronization (ZK EventQueue)
+## Real-time Cross-Browser Synchronization (OSGi EventAdmin)
 
 ### Overview
 
-The system implements **real-time cross-browser synchronization** using ZK Framework's EventQueue mechanism. When operators scan products in the barcode dialog on one browser, all other open KPI dialogs across different browsers/sessions automatically refresh to show updated quantities without manual refresh.
-
+The system implements **real-time cross-browser synchronization** using iDempiere's native OSGi EventAdmin mechanism. This architecture decouples the event publishing (business logic) from the event consumption (ZK UI), providing a more robust and scalable solution than standard ZK EventQueues.
 
 ### Architecture
 
-The EventQueue enables **two types of subscribers**:
-1. **KPI Dialog**: Auto-refreshes when viewing a specific resource
-2. **Timeline View**: Auto-refreshes the main schedule view
+The system uses a Publish-Subscribe model centered around the `idempiere/mes/update` topic.
 
 ```mermaid
 sequenceDiagram
     participant Browser1
     participant Browser2_Timeline
     participant Browser2_KPI
-    participant EventQueue
+    participant OSGi_EventAdmin
     participant Database
     
     Browser1->>Database: Scan product (update QtyDelivered)
-    Browser1->>EventQueue: Publish MES_UPDATE event
-    EventQueue->>Browser2_Timeline: Broadcast to Timeline subscriber
-    EventQueue->>Browser2_KPI: Broadcast to KPI Dialog subscriber
+    Browser1->>OSGi_EventAdmin: Publish idempiere/mes/update
+    OSGi_EventAdmin->>Browser2_Timeline: Broadcast to Timeline Subscriber
+    OSGi_EventAdmin->>Browser2_KPI: Broadcast to KPI Dialog Subscriber
     Browser2_Timeline->>Database: Query updated timeline data
     Browser2_Timeline->>Browser2_Timeline: Refresh Timeline + Show notification
     Browser2_KPI->>Database: Query updated KPI data
     Browser2_KPI->>Browser2_KPI: Refresh KPI cards + Show notification
 ```
 
-
 ### Implementation Details
 
 #### Constants
 
 ```java
-// Event Queue Configuration
-private static final String EVENT_QUEUE_NAME = "MesUpdateQueue";
-private static final String EVENT_NAME_UPDATE = "MES_UPDATE";
+public static final String TOPIC_MES_UPDATE = "idempiere/mes/update";
+public static final String PROPERTY_ORDER_ID = "M_Production_ID";
+public static final String PROPERTY_QTY = "Qty";
 ```
 
-#### Publisher (Barcode Scan Dialog)
-
-**Location**: `showPackingDialog()` method, ~line 1010
-
-**Trigger**: After successful product scan and DB update
+#### Publisher (Any Component)
+Publishing an update is simple and static, requiring no ZK context:
 
 ```java
-// Publish event after successful scan
-int orderId = DB.getSQLValue(null,
-    "SELECT PP_Order_ID FROM PP_Order WHERE DocumentNo=? AND M_Product_ID=?",
-    orderNo, productId);
-
-EventQueue<Event> queue = EventQueues.lookup(
-    EVENT_QUEUE_NAME, 
-    EventQueues.APPLICATION, 
-    true);
-
-Event mesEvent = new Event(EVENT_NAME_UPDATE, null, 
-    new Object[] { orderId, productId, qty });
-queue.publish(mesEvent);
+MESBroadcastUtil.publishMESUpdate(orderId, productId, qty);
 ```
 
-**Event Payload**:
-- `orderId` (Integer): PP_Order_ID that was updated
-- `productId` (Integer): M_Product_ID that was scanned
-- `qty` (Integer): Quantity that was added
-
-#### Subscriber (KPI Dialog)
-
-**Location**: `subscribeKPIDialogToEvents()` helper method, ~line 880
-
-**Lifecycle**: Subscribes when KPI dialog opens, unsubscribes when closed
+#### Subscribers (ZK UI)
+UI Components register an OSGi `EventHandler` and use `Executions.schedule` to update the UI thread-safely.
 
 ```java
-// Enable server push for real-time updates
-Executions.getCurrent().getDesktop().enableServerPush(true);
+// Register in init
+EventManager.getInstance().register(MESBroadcastUtil.TOPIC_MES_UPDATE, handler);
 
-// Subscribe to event queue
-EventQueue<Event> queue = EventQueues.lookup(
-    EVENT_QUEUE_NAME, 
-    EventQueues.APPLICATION, 
-    true);
-
-queue.subscribe(new EventListener<Event>() {
-    public void onEvent(Event event) throws Exception {
-        if (EVENT_NAME_UPDATE.equals(event.getName())) {
-            Object[] data = (Object[]) event.getData();
-            
-            // Schedule UI refresh on ZK desktop thread
-            Executions.schedule(kpiDesktop, new EventListener<Event>() {
-                public void onEvent(Event evt) throws Exception {
-                    refreshCallback.run();  // Reload KPI data
-                    
-                    // Show notification
-                    Clients.showNotification(
-                        "🔴 Remote Scan! Order " + docNo + " updated",
-                        "info", null, "top_right", 3000);
-                }
-            }, new Event("updateKPI"));
-        }
-    }
+// Clean up on detach
+this.addEventListener("onDetach", event -> {
+    EventManager.getInstance().unregister(handler);
 });
 ```
 
-#### Subscriber #2: Timeline View
+### Supported Actions
 
-**Location**: `subscribeTimelineToEvents()` helper method, ~line 968
+All of the following actions trigger immediate updates across all sessions:
 
-**Lifecycle**: Subscribes when Timeline initializes (in `initForm()`), active for entire session
-
-```java
-// Enable server push for Timeline
-Desktop timelineDesktop = Executions.getCurrent().getDesktop();
-timelineDesktop.enableServerPush(true);
-
-// Subscribe to event queue
-EventQueue<Event> queue = EventQueues.lookup(
-    EVENT_QUEUE_NAME, 
-    EventQueues.APPLICATION, 
-    true);
-
-queue.subscribe(new EventListener<Event>() {
-    public void onEvent(Event event) throws Exception {
-        if (EVENT_NAME_UPDATE.equals(event.getName())) {
-            Object[] data = (Object[]) event.getData();
-            
-            // Schedule Timeline refresh on ZK desktop thread
-            Executions.schedule(timelineDesktop, new EventListener<Event>() {
-                public void onEvent(Event evt) throws Exception {
-                    refreshTimeline();  // Reload entire Timeline
-                    
-                    // Show notification
-                    Clients.showNotification(
-                        "🔄 Order " + docNo + " updated - Timeline refreshed",
-                        "info", null, "top_right", 3000);
-                }
-            }, new Event("updateTimeline"));
-        }
-    }
-});
-```
-
+| Publisher | Action | Timeline Refreshes | KPI Dialog Refreshes |
+|-----------|--------|-------------------|---------------------|
+| Barcode Dialog | Scan product (Qty Update) | ✅ | ✅ |
+| Timeline (Drag) | Reschedule Order | ✅ | ✅ |
+| Context Menu | Change Stage (Cutting, etc) | ✅ | ✅ |
+| Context Menu | Update Notice | ✅ | ✅ |
 ### Server Push Configuration
 
 **Requirement**: ZK Server Push must be enabled for each Desktop that receives updates.
@@ -644,80 +569,7 @@ label.setText(stageConfig.getIcon() + " " + stageConfig.getLabel());
 
 ---
 
-## Timeline Update EventQueue Publishing
 
-### Overview
-
-In addition to barcode scanning, the system publishes EventQueue events when orders are updated via Timeline interactions (drag-and-drop, context menu stage changes). This ensures KPI Dialogs automatically refresh across browsers.
-
-### Event Publishers
-
-| Action | Method | Trigger | Event Data |
-|--------|--------|---------|------------|
-| Barcode Scan | `showPackingDialog()` | Product scanned | `[orderId, productId, qty]` |
-| Timeline Drag | `updateOrder()` | Order moved/rescheduled | `[orderId, productId, 0]` |
-| Context Menu | `updateOrderStage()` | Stage changed (Cutting/Sewing/etc) | `[orderId, productId, 0]` |
-
-### Implementation: Timeline Drag
-
-**Method**: `WProductionSchedule.updateOrder()`
-
-When user drags an order on Timeline to change time/resource:
-
-```java
-// After successful DB update
-if (no > 0) {
-    Clients.showNotification(msg, "info", null, "middle_center", 3000);
-    
-    // Publish EventQueue event
-    int productId = DB.getSQLValue(null, 
-        "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", id);
-    
-    EventQueue<Event> queue = EventQueues.lookup(
-        EVENT_QUEUE_NAME, 
-        EventQueues.APPLICATION, 
-        true);
-    
-    Event updateEvent = new Event(EVENT_NAME_UPDATE, null, 
-        new Object[] { id, productId, 0 });
-    queue.publish(updateEvent);
-}
-```
-
-### Implementation: Context Menu Stage Change
-
-**Method**: `WProductionSchedule.updateOrderStage()`
-
-When user right-clicks order and selects "Process Set" (Cutting/Sewing/etc) or "Material Issue":
-
-```java
-DB.executeUpdate("UPDATE PP_Order SET Description=? WHERE PP_Order_ID=?", 
-    new Object[] { newDesc, orderId }, false, null);
-
-// Publish EventQueue event
-int productId = DB.getSQLValue(null, 
-    "SELECT M_Product_ID FROM PP_Order WHERE PP_Order_ID=?", orderId);
-
-EventQueue<Event> queue = EventQueues.lookup(
-    EVENT_QUEUE_NAME, 
-    EventQueues.APPLICATION, 
-    true);
-
-Event updateEvent = new Event(EVENT_NAME_UPDATE, null, 
-    new Object[] { orderId, productId, 0 });
-queue.publish(updateEvent);
-
-refreshTimeline();
-```
-
-### Complete Synchronization Matrix
-
-| Publisher | Action | Timeline Refreshes | KPI Dialog Refreshes |
-|-----------|--------|-------------------|---------------------|
-| Barcode Dialog | Scan product | ✅ | ✅ |
-| Timeline | Drag order (reschedule) | ✅ | ✅ |
-| Timeline | Context menu → Process Set | ✅ | ✅ |
-| Timeline | Context menu → Material Issue | ✅ | ✅ |
 
 ### Console Logging
 

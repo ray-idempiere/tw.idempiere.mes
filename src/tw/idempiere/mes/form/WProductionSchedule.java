@@ -5,6 +5,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
@@ -13,6 +14,8 @@ import java.util.logging.Level;
 import org.adempiere.exceptions.AdempiereException;
 import org.adempiere.webui.apps.AEnv;
 import org.adempiere.webui.component.Button;
+import org.adempiere.webui.component.Column;
+import org.adempiere.webui.component.Columns;
 import org.adempiere.webui.component.Grid;
 import org.adempiere.webui.component.GridFactory;
 import org.adempiere.webui.component.Label;
@@ -64,6 +67,9 @@ import org.zkoss.zul.Timer;
 import org.zkoss.zul.Vbox;
 
 import tw.idempiere.mes.service.MESService;
+import tw.idempiere.mes.util.MESBroadcastUtil;
+import org.adempiere.base.event.EventManager;
+import org.osgi.service.event.EventHandler;
 
 /**
  * Production Schedule Form with Timeline
@@ -75,7 +81,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
     // ==================== UI Constants ====================
 
-    private static final String VERSION = "1.3.0"; // Current System Version
+    private static final String VERSION = "2.2.0"; // Current System Version
 
     // Window Dimensions
     private static final String WINDOW_WIDTH_FULL = "100%";
@@ -157,6 +163,14 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
     private MESService service = new MESService();
 
+    @Override
+    public void onPageAttached(org.zkoss.zk.ui.Page newpage, org.zkoss.zk.ui.Page oldpage) {
+        super.onPageAttached(newpage, oldpage);
+        if (newpage != null) {
+            newpage.getDesktop().enableServerPush(true);
+        }
+    }
+
     protected void initForm() {
         ZKUpdateUtil.setHeight(this, "100%");
         Borderlayout layout = new Borderlayout();
@@ -178,7 +192,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         toolbar.setStyle("padding: 5px; align-items: center;");
 
         // Project Title & Version
-        Label lblTitle = new Label("iDempiere Taiwan MES " + VERSION);
+        Label lblTitle = new Label("Taiwan MES " + VERSION);
         lblTitle.setStyle("font-weight: bold; font-size: 18px; color: #2c3e50; margin-right: 15px; margin-left: 5px;");
         toolbar.appendChild(lblTitle);
 
@@ -211,6 +225,23 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         btnGenerate.addEventListener(Events.ON_CLICK, this);
         toolbar.appendChild(btnGenerate);
 
+        toolbar.appendChild(new Space());
+        toolbar.appendChild(new Separator("vertical"));
+        toolbar.appendChild(new Space());
+
+        // Zoom Presets
+        Button btnZoomWeek = new Button("Week (7d)");
+        btnZoomWeek.setAttribute("zoom", "week");
+        btnZoomWeek.addEventListener(Events.ON_CLICK, this);
+        toolbar.appendChild(btnZoomWeek);
+
+        Button btnZoomMonth = new Button("Month (30d)");
+        btnZoomMonth.setAttribute("zoom", "month");
+        btnZoomMonth.addEventListener(Events.ON_CLICK, this);
+        toolbar.appendChild(btnZoomMonth);
+
+        toolbar.appendChild(new Space());
+        toolbar.appendChild(new Separator("vertical"));
         toolbar.appendChild(new Space());
 
         // Search Box
@@ -379,21 +410,17 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             + "        var items = new vis.DataSet(itemsData); "
             + "        "
             + "        options.onMove = function(item, callback) { "
-            + "            if (confirm('Confirm reschedule ' + item.content + '?')) { "
-            + "                var wgt = zk.Widget.$('#' + listenerUuid); "
-            + "                if (wgt) { "
-            + "                    wgt.fire('onOrderMove', { "
-            + "                        id: item.id, "
-            + "                        start: item.start.toISOString(), "
-            + "                        end: item.end.toISOString(), "
-            + "                        group: item.group "
-            + "                    }, {toServer: true}); "
-            + "                    callback(item); "
-            + "                } else { "
-            + "                    console.error('Widget not found: ' + listenerUuid); "
-            + "                    callback(null); "
-            + "                } "
+            + "            var wgt = zk.Widget.$('#' + listenerUuid); "
+            + "            if (wgt) { "
+            + "                wgt.fire('onOrderMove', { "
+            + "                    id: item.id, "
+            + "                    start: item.start.toISOString(), "
+            + "                    end: item.end.toISOString(), "
+            + "                    group: item.group "
+            + "                }, {toServer: true}); "
+            + "                callback(item); "
             + "            } else { "
+            + "                console.error('Widget not found: ' + listenerUuid); "
             + "                callback(null); "
             + "            } "
             + "        }; "
@@ -468,11 +495,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         if (event.getTarget() == btnRefresh) {
             refreshTimeline();
         } else if (event.getTarget() == btnToday) {
-            Clients.evalJavaScript("if(window.currentVisTimeline) { " +
-                    "var t = new Date(); " +
-                    "var e = new Date(); e.setMonth(t.getMonth() + 1); " +
-                    "window.currentVisTimeline.setWindow(t, e); " +
-                    "}");
+            handleZoom("today");
+        } else if (event.getTarget().getAttribute("zoom") != null) {
+            handleZoom((String) event.getTarget().getAttribute("zoom"));
         } else if (event.getTarget() == btnGenerate) {
             showGenerateDialog();
         } else if (event.getTarget() == btnSearch
@@ -498,7 +523,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             String startStr = data.get("start").toString();
             String endStr = data.get("end").toString();
             int resourceId = Integer.parseInt(data.get("group").toString());
-            updateOrder(id, resourceId, startStr, endStr);
+            showRescheduleConfirmDialog(id, resourceId, startStr, endStr);
         } else if (event.getName().equals("onItemSelect")) {
             org.zkoss.json.JSONObject data = (org.zkoss.json.JSONObject) event.getData();
             int id = Integer.parseInt(data.get("id").toString());
@@ -524,6 +549,24 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         } else if (event.getName().equals("onNotice")) {
             int orderId = (Integer) ((org.zkoss.json.JSONObject) event.getData()).get("id");
             showNoticeDialog(orderId);
+        }
+    }
+
+    private void handleZoom(String type) {
+        String script = "";
+        if ("today".equals(type)) {
+            // Today 00:00 to 24:00
+            script = "var t = new Date(); t.setHours(0,0,0,0); var e = new Date(); e.setHours(23,59,59,999); window.currentVisTimeline.setWindow(t, e);";
+        } else if ("week".equals(type)) {
+            // Today to +7d
+            script = "var t = new Date(); t.setHours(0,0,0,0); var e = new Date(); e.setDate(t.getDate() + 7); window.currentVisTimeline.setWindow(t, e);";
+        } else if ("month".equals(type)) {
+            // Today to +30d
+            script = "var t = new Date(); t.setHours(0,0,0,0); var e = new Date(); e.setDate(t.getDate() + 30); window.currentVisTimeline.setWindow(t, e);";
+        }
+
+        if (!script.isEmpty()) {
+            Clients.evalJavaScript("if(window.currentVisTimeline) { " + script + " }");
         }
     }
 
@@ -562,13 +605,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             System.out.println("=== DEBUG: [Context Menu] Publishing stage change event for Order ID: " + orderId
                     + ", Stage: " + stage);
 
-            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
-                    EVENT_QUEUE_NAME,
-                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
-                    true);
-
-            Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { orderId, productId, 0 });
-            queue.publish(updateEvent);
+            MESBroadcastUtil.publishMESUpdate(orderId, productId, 0);
 
             System.out.println("=== DEBUG: [Context Menu] Event published successfully");
         } catch (Exception ex) {
@@ -607,17 +644,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
             System.out.println("=== DEBUG: [Context Menu] Publishing notice change event for Order ID: " + orderId);
 
-            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
-                    EVENT_QUEUE_NAME,
-                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
-                    true);
-
-            Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { orderId, productId, 0 });
-            queue.publish(updateEvent);
-
-            System.out.println("=== DEBUG: [Context Menu] Event published successfully");
+            MESBroadcastUtil.publishMESUpdate(orderId, productId, 0);
         } catch (Exception ex) {
-            System.err.println("=== DEBUG: [Context Menu] Failed to publish event: " + ex.getMessage());
+            log.warning("Failed to publish notice event: " + ex.getMessage());
         }
 
         refreshTimeline();
@@ -1213,13 +1242,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             try {
                 int productId = production.getM_Product_ID();
 
-                org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
-                        EVENT_QUEUE_NAME,
-                        org.zkoss.zk.ui.event.EventQueues.APPLICATION,
-                        true);
-
-                Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { orderId, productId, 0 });
-                queue.publish(updateEvent);
+                MESBroadcastUtil.publishMESUpdate(orderId, productId, 0);
             } catch (Exception ex) {
                 log.warning("Failed to publish completion event: " + ex.getMessage());
             }
@@ -1261,8 +1284,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         }
 
         // Load Groups (Resources) and Items (PP_Orders)
-        String groupJson = getGroupsJSON();
-        String itemJson = getItemsJSON();
+        String groupJson = service.getGroupsJSON(Env.getAD_Client_ID(Env.getCtx()), null);
+        String searchText = (txtSearch != null) ? txtSearch.getValue() : null;
+        String itemJson = service.getItemsJSON(searchText);
 
         // Update KPIs
         String period = "Day";
@@ -1296,9 +1320,9 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             options.append(" 'start': (function(){ var d = new Date(); d.setHours(8,0,0,0); return d; })(),");
             options.append(" 'end': (function(){ var d = new Date(); d.setDate(d.getDate()+7); return d; })(),");
         } else {
-            // Normal Mode: 1 Month range starting from today 08:00
+            // Normal Mode: 1 Week range starting from today 08:00
             options.append(" 'start': (function(){ var d = new Date(); d.setHours(8,0,0,0); return d; })(),");
-            options.append(" 'end': (function(){ var d = new Date(); d.setMonth(d.getMonth()+1); return d; })(),");
+            options.append(" 'end': (function(){ var d = new Date(); d.setDate(d.getDate()+7); return d; })(),");
         }
 
         options.append(" 'hiddenDates': [");
@@ -1581,7 +1605,14 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
         // Subscribe to Real-time Events
         final org.zkoss.zk.ui.Desktop kpiDesktop = org.zkoss.zk.ui.Executions.getCurrent().getDesktop();
-        subscribeKPIDialogToEvents(kpiDesktop, refreshListWrapper[0], highlightId, resName);
+        final EventHandler handler = subscribeKPIDialogToEvents(kpiDesktop, refreshListWrapper[0], highlightId,
+                resName);
+
+        kpiWindow.addEventListener("onDetach", new EventListener<Event>() {
+            public void onEvent(Event event) throws Exception {
+                EventManager.getInstance().unregister(handler);
+            }
+        });
 
         kpiWindow.doModal();
     }
@@ -1654,66 +1685,65 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
      * @param refreshCallback Runnable to execute when refresh is needed
      * @param resourceName    Name of resource (for logging purposes)
      */
-    private void subscribeKPIDialogToEvents(final org.zkoss.zk.ui.Desktop kpiDesktop, final Runnable refreshCallback,
+    private EventHandler subscribeKPIDialogToEvents(final org.zkoss.zk.ui.Desktop kpiDesktop,
+            final Runnable refreshCallback,
             final int[] highlightId, final String resourceName) {
-        System.out.println("=== DEBUG: [KPI Dialog] Subscribing to EventQueue for resource: " + resourceName);
+        System.out.println("=== DEBUG: [KPI Dialog] Subscribing to OSGi EventAdmin for resource: " + resourceName);
 
-        try {
-            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
-                    EVENT_QUEUE_NAME,
-                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
-                    true);
+        final EventHandler handler = new EventHandler() {
+            @Override
+            public void handleEvent(final org.osgi.service.event.Event event) {
+                System.out.println("=== DEBUG: [KPI Dialog] *** EVENT RECEIVED *** Topic: " + event.getTopic());
 
-            queue.subscribe(new EventListener<Event>() {
-                public void onEvent(Event event) throws Exception {
-                    System.out.println("=== DEBUG: [KPI Dialog] *** EVENT RECEIVED *** Name: " + event.getName());
+                if (MESBroadcastUtil.TOPIC_MES_UPDATE.equals(event.getTopic())) {
+                    final Integer orderId = (Integer) event.getProperty(MESBroadcastUtil.PROPERTY_ORDER_ID);
+                    final Integer productId = (Integer) event.getProperty(MESBroadcastUtil.PROPERTY_PRODUCT_ID);
 
-                    if (EVENT_NAME_UPDATE.equals(event.getName())) {
-                        final Object[] data = (Object[]) event.getData();
-                        System.out.println(
-                                "=== DEBUG: [KPI Dialog] Event data: orderId=" + data[0] + ", productId=" + data[1]);
+                    System.out.println(
+                            "=== DEBUG: [KPI Dialog] Event data: orderId=" + orderId + ", productId=" + productId);
 
-                        if (kpiDesktop.isAlive()) {
-                            System.out.println("=== DEBUG: [KPI Dialog] Scheduling refresh...");
+                    if (kpiDesktop.isAlive()) {
+                        System.out.println("=== DEBUG: [KPI Dialog] Scheduling refresh...");
 
-                            org.zkoss.zk.ui.Executions.schedule(kpiDesktop, new EventListener<Event>() {
-                                public void onEvent(Event evt) throws Exception {
-                                    System.out.println("=== DEBUG: [KPI Dialog] Executing refresh on Desktop: "
-                                            + kpiDesktop.getId());
+                        try {
+                            org.zkoss.zk.ui.Executions.schedule(kpiDesktop,
+                                    new EventListener<org.zkoss.zk.ui.event.Event>() {
+                                        public void onEvent(org.zkoss.zk.ui.event.Event evt) throws Exception {
+                                            System.out.println("=== DEBUG: [KPI Dialog] Executing refresh on Desktop: "
+                                                    + kpiDesktop.getId());
 
-                                    // Refresh the entire KPI display
-                                    // Refresh the entire KPI display
-                                    if (data != null && data.length > 0) {
-                                        highlightId[0] = (Integer) data[0];
-                                    }
-                                    refreshCallback.run();
+                                            if (orderId != null) {
+                                                highlightId[0] = orderId;
+                                            }
+                                            refreshCallback.run();
 
-                                    // Show visual notification
-                                    int orderId = (Integer) data[0];
-                                    String docNo = DB.getSQLValueString(null,
-                                            "SELECT DocumentNo FROM M_Production WHERE M_Production_ID=?", orderId);
+                                            // Show visual notification
+                                            String docNo = DB.getSQLValueString(null,
+                                                    "SELECT DocumentNo FROM M_Production WHERE M_Production_ID=?",
+                                                    orderId);
 
-                                    org.zkoss.zk.ui.util.Clients.showNotification(
-                                            "🔴 Remote Scan! Order " + docNo + " updated",
-                                            "info",
-                                            null,
-                                            NOTIFY_POS_TOP_RIGHT,
-                                            NOTIFY_DURATION_EXTRA);
+                                            org.zkoss.zk.ui.util.Clients.showNotification(
+                                                    "🔴 Remote Scan! Order " + docNo + " updated",
+                                                    "info",
+                                                    null,
+                                                    NOTIFY_POS_TOP_RIGHT,
+                                                    NOTIFY_DURATION_EXTRA);
 
-                                    System.out.println("=== DEBUG: [KPI Dialog] Refresh completed!");
-                                }
-                            }, new Event("updateKPI"));
+                                            System.out.println("=== DEBUG: [KPI Dialog] Refresh completed!");
+                                        }
+                                    }, new org.zkoss.zk.ui.event.Event("updateKPI"));
+                        } catch (Exception e) {
+                            e.printStackTrace();
                         }
                     }
                 }
-            });
+            }
+        };
 
-            System.out.println("=== DEBUG: [KPI Dialog] Subscription completed");
+        // Register with EventManager
+        EventManager.getInstance().register(MESBroadcastUtil.TOPIC_MES_UPDATE, handler);
 
-        } catch (Exception e) {
-            System.err.println("=== DEBUG: [KPI Dialog] EXCEPTION in subscription:");
-            e.printStackTrace();
-        }
+        return handler;
     }
 
     /**
@@ -1728,8 +1758,13 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         }
 
         // Parse "Stage: Sewing" format
-        if (description.startsWith("Stage: ")) {
-            return description.substring(7).trim();
+        if (description.contains("Stage: ")) {
+            int startIndex = description.indexOf("Stage: ") + 7;
+            int endIndex = description.indexOf("\n", startIndex);
+            if (endIndex == -1) {
+                endIndex = description.length();
+            }
+            return description.substring(startIndex, endIndex).trim();
         }
 
         return null;
@@ -1775,7 +1810,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
      * when production orders are scanned in any browser session.
      */
     private void subscribeTimelineToEvents() {
-        System.out.println("=== DEBUG: [Timeline] Subscribing to EventQueue");
+        System.out.println("=== DEBUG: [Timeline] Subscribing to OSGi EventAdmin");
 
         try {
             // Enable server push for Timeline desktop
@@ -1783,50 +1818,63 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             timelineDesktop.enableServerPush(true);
             System.out.println("=== DEBUG: [Timeline] Server Push Enabled");
 
-            // Subscribe to application-wide event queue
-            org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
-                    EVENT_QUEUE_NAME,
-                    org.zkoss.zk.ui.event.EventQueues.APPLICATION,
-                    true);
+            final EventHandler handler = new EventHandler() {
+                @Override
+                public void handleEvent(final org.osgi.service.event.Event event) {
+                    System.out.println("=== DEBUG: [Timeline] *** EVENT RECEIVED *** Topic: " + event.getTopic());
 
-            queue.subscribe(new EventListener<Event>() {
-                public void onEvent(Event event) throws Exception {
-                    System.out.println("=== DEBUG: [Timeline] *** EVENT RECEIVED *** Name: " + event.getName());
+                    if (MESBroadcastUtil.TOPIC_MES_UPDATE.equals(event.getTopic())) {
+                        final Integer orderId = (Integer) event.getProperty(MESBroadcastUtil.PROPERTY_ORDER_ID);
 
-                    if (EVENT_NAME_UPDATE.equals(event.getName())) {
-                        final Object[] data = (Object[]) event.getData();
                         System.out.println(
-                                "=== DEBUG: [Timeline] Event data: orderId=" + data[0] + ", productId=" + data[1]);
+                                "=== DEBUG: [Timeline] Event data: orderId=" + orderId);
 
                         if (timelineDesktop.isAlive()) {
                             System.out.println("=== DEBUG: [Timeline] Scheduling Timeline refresh...");
 
-                            org.zkoss.zk.ui.Executions.schedule(timelineDesktop, new EventListener<Event>() {
-                                public void onEvent(Event evt) throws Exception {
-                                    System.out.println("=== DEBUG: [Timeline] Executing Timeline refresh");
+                            try {
+                                org.zkoss.zk.ui.Executions.schedule(timelineDesktop,
+                                        new EventListener<org.zkoss.zk.ui.event.Event>() {
+                                            public void onEvent(org.zkoss.zk.ui.event.Event evt) throws Exception {
+                                                System.out.println("=== DEBUG: [Timeline] Executing Timeline refresh");
 
-                                    // Refresh the Timeline to show updated order status
-                                    refreshTimeline();
+                                                // Refresh the Timeline to show updated order status
+                                                refreshTimeline();
 
-                                    // Show notification
-                                    int orderId = (Integer) data[0];
-                                    String docNo = DB.getSQLValueString(null,
-                                            "SELECT DocumentNo FROM M_Production WHERE M_Production_ID=?", orderId);
+                                                // Show notification
+                                                String docNo = DB.getSQLValueString(null,
+                                                        "SELECT DocumentNo FROM M_Production WHERE M_Production_ID=?",
+                                                        orderId);
 
-                                    org.zkoss.zk.ui.util.Clients.showNotification(
-                                            "🔄 Order " + docNo + " updated - Timeline refreshed",
-                                            "info",
-                                            null,
-                                            NOTIFY_POS_TOP_RIGHT,
-                                            NOTIFY_DURATION_EXTRA);
+                                                org.zkoss.zk.ui.util.Clients.showNotification(
+                                                        "🔄 Order " + docNo + " updated - Timeline refreshed",
+                                                        "info",
+                                                        null,
+                                                        NOTIFY_POS_TOP_RIGHT,
+                                                        NOTIFY_DURATION_EXTRA);
 
-                                    System.out.println("=== DEBUG: [Timeline] Timeline refresh completed!");
-                                }
-                            }, new Event("updateTimeline"));
+                                                System.out.println("=== DEBUG: [Timeline] Timeline refresh completed!");
+                                            }
+                                        }, new org.zkoss.zk.ui.event.Event("updateTimeline"));
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
                         }
                     }
                 }
-            });
+            };
+
+            EventManager.getInstance().register(MESBroadcastUtil.TOPIC_MES_UPDATE, handler);
+
+            // Register cleanup on the timeline container or desktop if possible?
+            // For Main Timeline, it stays alive usually.
+            // Ideally we should hook into onDetach of the main component.
+            this.addEventListener("onDetach",
+                    new EventListener<org.zkoss.zk.ui.event.Event>() {
+                        public void onEvent(org.zkoss.zk.ui.event.Event event) throws Exception {
+                            EventManager.getInstance().unregister(handler);
+                        }
+                    });
 
             System.out.println("=== DEBUG: [Timeline] Subscription completed");
 
@@ -1969,15 +2017,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
                                     + orderId + ", ProductID: " + productId);
 
                             try {
-                                org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues
-                                        .lookup(EVENT_QUEUE_NAME, org.zkoss.zk.ui.event.EventQueues.APPLICATION, true);
-
-                                System.out.println("=== DEBUG: [Packing Dialog] Queue retrieved: " + queue);
-
-                                Event mesEvent = new Event(EVENT_NAME_UPDATE, null,
-                                        new Object[] { orderId, productId, qty });
-                                queue.publish(mesEvent);
-
+                                MESBroadcastUtil.publishMESUpdate(orderId, productId, qty);
                                 System.out.println("=== DEBUG: [Packing Dialog] *** EVENT PUBLISHED SUCCESSFULLY ***");
 
                             } catch (Exception pubEx) {
@@ -2054,6 +2094,135 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
         return DB.getSQLValue(null, sql, barcode.trim(), Env.getAD_Client_ID(Env.getCtx()));
     }
 
+    private void showRescheduleConfirmDialog(final int id, final int newResourceId, final String newStartStr,
+            final String newEndStr) {
+        // 1. Fetch Details
+        String sql = "SELECT o.DocumentNo, p.Value, o.ProductionQty, r.Name, o.MovementDate " +
+                "FROM M_Production o " +
+                "INNER JOIN M_Product p ON (o.M_Product_ID=p.M_Product_ID) " +
+                "INNER JOIN S_Resource r ON (o.S_Resource_ID=r.S_Resource_ID) " +
+                "WHERE o.M_Production_ID=?";
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String docNo = "";
+        String prodValue = "";
+        BigDecimal qty = BigDecimal.ZERO;
+        String oldResource = "";
+        Timestamp oldDate = null;
+
+        try {
+            pstmt = DB.prepareStatement(sql, null);
+            pstmt.setInt(1, id);
+            rs = pstmt.executeQuery();
+            if (rs.next()) {
+                docNo = rs.getString(1);
+                prodValue = rs.getString(2);
+                qty = rs.getBigDecimal(3);
+                oldResource = rs.getString(4);
+                oldDate = rs.getTimestamp(5);
+            }
+        } catch (SQLException e) {
+            log.log(Level.SEVERE, "Error fetching order for reschedule confirm", e);
+        } finally {
+            DB.close(rs, pstmt);
+        }
+
+        String newResource = DB.getSQLValueString(null, "SELECT Name FROM S_Resource WHERE S_Resource_ID=?",
+                newResourceId);
+
+        // Parse New Date
+        Timestamp newDate = null;
+        try {
+            // ISO 8601 parsing (Vis.js sends ISO strings)
+            // Simple hack: Vis.js sends "2023-10-27T08:00:00.000Z"
+            // Using simple date if possible or JodaTime/Java8 Time
+            // Let's rely on simple string parsing or Timestamp.valueOf if format matches
+            // But ISO format has T and Z.
+            // Let's use Timestamp(long) from parsed Date
+            // Assume standard ZK/Java env has access to basic parsing
+            // Actually, `updateOrder` handled this via `DateStartSchedule` logic before,
+            // but here I just need to show it.
+            // Let's use a quick parser or substring if format is stable (Vis.js is stable)
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX");
+            java.util.Date d = sdf.parse(newStartStr);
+            newDate = new Timestamp(d.getTime());
+        } catch (Exception e) {
+            // Fallback or ignore
+            log.warning("Could not parse date: " + newStartStr);
+        }
+
+        final Window win = new Window();
+        win.setTitle("Confirm Reschedule");
+        win.setWidth("400px");
+        win.setClosable(true);
+        win.setBorder("normal");
+
+        Vbox vbox = new Vbox();
+        vbox.setWidth("100%");
+        vbox.setSpacing("10px");
+        win.appendChild(vbox);
+
+        Grid grid = new Grid();
+        Columns cols = new Columns();
+        Column colLbl = new Column();
+        colLbl.setWidth("120px");
+        Column colVal = new Column();
+        cols.appendChild(colLbl);
+        cols.appendChild(colVal);
+        grid.appendChild(cols);
+
+        Rows rows = new Rows();
+        grid.appendChild(rows);
+        SimpleDateFormat sdfShort = new SimpleDateFormat("yyyy-MM-dd");
+        addRow(rows, "DocumentNo:", docNo);
+        addRow(rows, "Product:", prodValue);
+        addRow(rows, "Qty:", qty + "");
+        addRow(rows, "Resource:", oldResource + " -> " + newResource);
+        addRow(rows, "Date:", sdfShort.format(oldDate) + " -> " + sdfShort.format(newDate));
+
+        vbox.appendChild(grid);
+
+        Hbox hbox = new Hbox();
+        hbox.setPack("end");
+        hbox.setWidth("100%");
+
+        Button btnConfirm = new Button("Confirm");
+        btnConfirm.addEventListener(Events.ON_CLICK, new org.zkoss.zk.ui.event.EventListener<Event>() {
+            @Override
+            public void onEvent(Event event) throws Exception {
+                updateOrder(id, newResourceId, newStartStr, newEndStr);
+                win.detach();
+            }
+        });
+
+        Button btnCancel = new Button("Cancel");
+        btnCancel.addEventListener(Events.ON_CLICK, new org.zkoss.zk.ui.event.EventListener<Event>() {
+            @Override
+            public void onEvent(Event event) throws Exception {
+                refreshTimeline();
+                win.detach();
+            }
+        });
+
+        hbox.appendChild(btnCancel);
+        hbox.appendChild(new Space());
+        hbox.appendChild(btnConfirm);
+
+        vbox.appendChild(hbox);
+
+        win.setPage(this.getPage());
+        win.doModal();
+    }
+
+    private void addRow(Rows rows, String label, String value) {
+        Row row = new Row();
+        row.appendChild(new Label(label));
+        Label valLbl = new Label(value);
+        valLbl.setStyle("font-weight: bold;");
+        row.appendChild(valLbl);
+        rows.appendChild(row);
+    }
+
     private void updateOrder(int id, int resourceId, String startStr, String endStr) {
         log.info("Moving Order " + id + " to Resource " + resourceId + " Start: " + startStr + " End: " + endStr);
 
@@ -2112,8 +2281,8 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
             }
 
             // 4. Update
-            String sql = "UPDATE M_Production SET S_Resource_ID=?, DateStartSchedule=?, DateFinishSchedule=? WHERE M_Production_ID=?";
-            int no = DB.executeUpdate(sql, new Object[] { resourceId, startTime, endTime, id }, false, null);
+            String sql = "UPDATE M_Production SET S_Resource_ID=?, MovementDate=? WHERE M_Production_ID=?";
+            int no = DB.executeUpdate(sql, new Object[] { resourceId, startTime, id }, false, null);
 
             if (no > 0) {
                 Clients.showNotification(msg, "info", null, "middle_center", 3000);
@@ -2126,13 +2295,7 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
 
                     System.out.println("=== DEBUG: [Timeline Update] Publishing event for Order ID: " + id);
 
-                    org.zkoss.zk.ui.event.EventQueue<Event> queue = org.zkoss.zk.ui.event.EventQueues.lookup(
-                            EVENT_QUEUE_NAME,
-                            org.zkoss.zk.ui.event.EventQueues.APPLICATION,
-                            true);
-
-                    Event updateEvent = new Event(EVENT_NAME_UPDATE, null, new Object[] { id, productId, 0 });
-                    queue.publish(updateEvent);
+                    MESBroadcastUtil.publishMESUpdate(id, productId, 0);
 
                     System.out.println("=== DEBUG: [Timeline Update] Event published successfully");
                 } catch (Exception ex) {
@@ -2150,14 +2313,6 @@ public class WProductionSchedule extends ADForm implements IFormController, Even
     }
 
     private tw.idempiere.mes.service.MESService mesService = new tw.idempiere.mes.service.MESService();
-
-    private String getGroupsJSON() {
-        return mesService.getGroupsJSON(Env.getAD_Client_ID(Env.getCtx()));
-    }
-
-    private String getItemsJSON() {
-        return mesService.getItemsJSON();
-    }
 
     private void showGenerateDialog() {
         final Window win = new Window();

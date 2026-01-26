@@ -22,7 +22,8 @@ Require-Bundle: org.adempiere.ui.zk,
  zkplus,
  zul
 Import-Package: com.google.gson,
- org.osgi.service.component.annotations;version="[1.5.0,2.0.0]"
+ org.osgi.service.component.annotations;version="[1.5.0,2.0.0]",
+ org.osgi.service.event
 Service-Component: OSGI-INF/tw.idempiere.mes.factories.MESFormFactory.xml,
  OSGI-INF/tw.idempiere.mes.validator.MMovementValidator.xml
 
